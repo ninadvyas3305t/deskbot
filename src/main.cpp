@@ -10,9 +10,13 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 int eyeOffsetX = 0;
 int eyeOffsetY = 0;
+
+
+
 const int touchPin = 7;
 bool lastTouchState = false;
 unsigned long curiousUntil = 0;
+unsigned long lastInteraction = 0;
 
 enum Behavior
 {
@@ -33,6 +37,21 @@ Behavior currentBehavior = IDLE;
 Mood currentMood = CALM;
 unsigned long nextBehaviorTime = 0;
 
+void drawPupils()
+{
+   display.fillCircle(
+       40 + eyeOffsetX,
+       32 + eyeOffsetY,
+       4,
+       SSD1306_BLACK);
+
+   display.fillCircle(
+       88 + eyeOffsetX,
+       32 + eyeOffsetY,
+       4,
+       SSD1306_BLACK);
+}
+
 void drawEyesOpen()
 {
     display.clearDisplay();
@@ -42,14 +61,18 @@ void drawEyesOpen()
         case CALM:
 
             display.fillRoundRect(28 + eyeOffsetX, 20 + eyeOffsetY, 24, 24, 8, SSD1306_WHITE);
+            drawPupils();
             display.fillRoundRect(76 + eyeOffsetX, 20 + eyeOffsetY, 24, 24, 8, SSD1306_WHITE);
+            drawPupils();
             break;
 
         case CURIOUS:
 
             // Taller eyes
             display.fillRoundRect(28 + eyeOffsetX, 16 + eyeOffsetY, 24, 32, 8, SSD1306_WHITE);
+            drawPupils();
             display.fillRoundRect(76 + eyeOffsetX, 16 + eyeOffsetY, 24, 32, 8, SSD1306_WHITE);
+            drawPupils();
             break;
 
         case SLEEPY:
@@ -87,6 +110,7 @@ void lookTo(int targetX)
         delay(40);
     }
 }
+
 
 
 
@@ -183,7 +207,7 @@ void setup()
     }
 
     randomSeed(micros());   // Initialize random number generator
-
+    lastInteraction = millis();
     drawEyesOpen();
 }
 
@@ -194,25 +218,34 @@ void loop()
         currentMood = CALM;
     
     }
+
+    if (currentMood == CALM && millis() - lastInteraction > 30000)
+    {
+        currentMood = SLEEPY;
+    }
+
     bool currentTouch = digitalRead(touchPin);
 
     if (currentTouch && !lastTouchState)
     {
         Serial.println("Touch detected!");
 
-        currentMood = CURIOUS;
+        lastInteraction = millis();    
 
         curiousUntil = millis() + 5000;
+        currentMood = CURIOUS;
+        
     }
 
     lastTouchState = currentTouch;
 
     if (millis() < nextBehaviorTime)
         return;
-    if (random(100) < 10)
-    {
-    chooseMood();
-    }
+
+    // if (random(100) < 10)
+    // {
+    // chooseMood();
+    // }
 
     chooseBehavior();
 
