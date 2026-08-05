@@ -10,6 +10,9 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 int eyeOffsetX = 0;
 int eyeOffsetY = 0;
+const int touchPin = 7;
+bool lastTouchState = false;
+unsigned long curiousUntil = 0;
 
 enum Behavior
 {
@@ -168,6 +171,8 @@ void chooseMood()
 void setup()
 {
     Serial.begin(115200);
+    pinMode(touchPin, INPUT);
+
     Serial.println("DeskBot Face Engine Started");
 
     Wire.begin(8, 9);
@@ -181,8 +186,27 @@ void setup()
 
     drawEyesOpen();
 }
+
 void loop()
 {
+    if (currentMood == CURIOUS && millis() > curiousUntil)
+    {
+        currentMood = CALM;
+    
+    }
+    bool currentTouch = digitalRead(touchPin);
+
+    if (currentTouch && !lastTouchState)
+    {
+        Serial.println("Touch detected!");
+
+        currentMood = CURIOUS;
+
+        curiousUntil = millis() + 5000;
+    }
+
+    lastTouchState = currentTouch;
+
     if (millis() < nextBehaviorTime)
         return;
     if (random(100) < 10)
