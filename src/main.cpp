@@ -32,6 +32,8 @@ int eyeOffsetY = 0;
 
 #define SAMPLE_RATE 16000
 #define MIC_BUFFER_SIZE 256
+#define STREAM_CHUNK_SAMPLES 256
+#define RECORD_BAUD 921600
 
 int32_t micSamples[MIC_BUFFER_SIZE];
 
@@ -399,11 +401,81 @@ void setupMicrophone()
 
     Serial.println("Microphone initialized successfully.");
 }
+void recordAudio()
+{
+    if (!microphoneReady)
+    {
+        Serial.println("MIC_NOT_READY");
+        return;
+    }
 
+    Serial.println("STREAM_START");
+    Serial.flush();
+
+    bool streaming = true;
+
+    while (streaming)
+    {
+        size_t bytesRead = 0;
+
+        i2s_read(
+            MIC_I2S_PORT,
+            micSamples,
+            sizeof(micSamples),
+            &bytesRead,
+            portMAX_DELAY
+        );
+
+        int count = bytesRead / sizeof(int32_t);
+
+        for (int i = 0; i < count; i++)
+        {
+            // Convert INMP441 32-bit I2S sample to 16-bit PCM
+            int16_t pcmSample =
+                (int16_t)(micSamples[i] >> 16);
+
+            Serial.write(
+                (uint8_t *)&pcmSample,
+                sizeof(pcmSample)
+            );
+        }
+
+        // Check whether the PC requested the stream to stop.
+        if (Serial.available())
+        {
+            String command = Serial.readStringUntil('\n');
+            command.trim();
+
+            if (command == "STOP_STREAM")
+            {
+                streaming = false;
+            }
+        }
+    }
+
+    Serial.flush();
+
+    Serial.println();
+    Serial.println("STREAM_END");
+}
+
+void handleSerialCommand()
+{
+    if (!Serial.available())
+        return;
+
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+
+    if (command == "START_STREAM")
+    {
+        recordAudio();
+    }
+}
 // ================= SETUP =================
 void setup()
 {
-    Serial.begin(115200);
+    Serial.begin(921600);
 
     pinMode(touchPin, INPUT);
 
@@ -470,7 +542,7 @@ lastInteraction = millis();
 
 void loop()
 {
-    
+    handleSerialCommand();
     updateAudio();
     if (currentMood == CURIOUS && millis() > curiousUntil)
     {

@@ -1,35 +1,59 @@
 import serial
 import wave
+import time
 
 PORT = "COM4"
 BAUD = 921600
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
-SAMPLE_WIDTH = 2  # 16-bit PCM
+SAMPLE_WIDTH = 2
 
-RECORD_SECONDS = 3
 OUTPUT_FILE = "test_recording.wav"
 
-EXPECTED_BYTES = (
+# Maximum safety limit.
+# The PC will normally stop the stream when we tell it to.
+MAX_RECORD_SECONDS = 30
+
+EXPECTED_MAX_BYTES = (
     SAMPLE_RATE
-    * RECORD_SECONDS
+    * MAX_RECORD_SECONDS
     * SAMPLE_WIDTH
 )
+
 
 print("Connecting to DeskBot...")
 
 ser = serial.Serial(
     PORT,
     BAUD,
-    timeout=2
+    timeout=1
 )
 
 print(f"Connected to {PORT}")
-print("Waiting for recording...")
 
-# Wait for the ESP32 to announce the start.
+# Give the ESP32 a moment after opening the serial port.
+time.sleep(0.5)
+
+print("Starting microphone stream...")
+
+ser.write(b"START_STREAM\n")
+ser.flush()
+
+# ---------------------------------------------------------
+# Wait for STREAM_START
+# ---------------------------------------------------------
+
+start_wait = time.time()
+
 while True:
+
+    if time.time() - start_wait > 10:
+        ser.close()
+        raise RuntimeError(
+            "Timed out waiting for STREAM_START from ESP32."
+        )
+
     line = ser.readline()
 
     if not line:
@@ -40,36 +64,61 @@ while True:
         errors="ignore"
     ).strip()
 
-    print(text)
+    if text:
+        print(text)
 
-    if text == "RECORDING_START":
+    if text == "STREAM_START":
         break
 
-print("🎤 Recording received from DeskBot...")
-print(f"Expected audio: {EXPECTED_BYTES} bytes")
+
+print("Microphone stream started.")
+print("Receiving audio...")
 
 audio_data = bytearray()
 
-while len(audio_data) < EXPECTED_BYTES:
+start_receive = time.time()
 
-    remaining = EXPECTED_BYTES - len(audio_data)
+while True:
 
-    chunk = ser.read(
-        min(4096, remaining)
-    )
+    # Safety timeout.
+    if time.time() - start_receive > MAX_RECORD_SECONDS:
+
+        print(
+            "\nMaximum recording time reached."
+        )
+
+        ser.write(b"STOP_STREAM\n")
+        ser.flush()
+
+        break
+
+    chunk = ser.read(4096)
 
     if chunk:
         audio_data.extend(chunk)
 
+    # Don't allow the buffer to grow beyond the safety limit.
+    if len(audio_data) >= EXPECTED_MAX_BYTES:
+
+        print(
+            "\nMaximum audio buffer reached."
+        )
+
+        ser.write(b"STOP_STREAM\n")
+        ser.flush()
+
+        break
+
+
 print(f"Received {len(audio_data)} bytes")
+
+# ---------------------------------------------------------
+# Save WAV
+# ---------------------------------------------------------
 
 ser.close()
 
-# Create WAV file.
-with wave.open(
-    OUTPUT_FILE,
-    "wb"
-) as wav:
+with wave.open(OUTPUT_FILE, "wb") as wav:
 
     wav.setnchannels(CHANNELS)
     wav.setsampwidth(SAMPLE_WIDTH)
@@ -77,5 +126,5 @@ with wave.open(
     wav.writeframes(audio_data)
 
 print()
-print("✅ Audio capture complete!")
+print("Recording complete!")
 print(f"Saved as: {OUTPUT_FILE}")
