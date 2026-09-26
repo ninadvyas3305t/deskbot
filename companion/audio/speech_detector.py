@@ -26,7 +26,7 @@ class SpeechDetector:
         initial_speech_timeout: float = 4.5,
         max_command_seconds: float = 12.0,
         transition_window_seconds: float = 0.3,
-        min_speech_amplitude: int = 80,
+        min_speech_amplitude: int = 200,
     ):
         if frame_duration_ms not in (10, 20, 30):
             raise ValueError("WebRTC VAD only supports 10, 20, or 30 ms frames.")
@@ -47,8 +47,8 @@ class SpeechDetector:
         # Silence frames required during transition to confirm user paused after wake word
         self.pause_silence_threshold = max(2, int(0.15 * 1000 / frame_duration_ms))
         self.min_speech_amplitude = min_speech_amplitude
-        # Sustained speech frames required before declaring speech active (filters 1-frame transient noise/clicks)
-        self.min_speech_onset_frames = max(2, int(0.06 * 1000 / frame_duration_ms))
+        # Sustained speech frames required before declaring speech active (filters transient noise/clicks/echoes)
+        self.min_speech_onset_frames = max(4, int(0.12 * 1000 / frame_duration_ms))
 
     def is_speech_frame(self, frame: bytes) -> bool:
         """Check whether a single PCM frame contains speech."""
@@ -101,6 +101,7 @@ class SpeechDetector:
         consecutive_silence = 0
         speech_start_announced = False
         consecutive_speech = 0
+        voiced_frames_count = 0
         onset_candidate_frames: list[bytes] = []
 
         start_time = time.monotonic()
@@ -163,6 +164,7 @@ class SpeechDetector:
                     onset_candidate_frames.append(frame)
                     if consecutive_speech >= self.min_speech_onset_frames:
                         speech_active = True
+                        voiced_frames_count = consecutive_speech
                         recording.extend(b"".join(pre_roll_deque))
                         for f in onset_candidate_frames:
                             recording.extend(f)
@@ -181,14 +183,15 @@ class SpeechDetector:
                 recording.extend(frame)
                 if is_speech:
                     consecutive_silence = 0
+                    voiced_frames_count += 1
                 else:
                     consecutive_silence += 1
                     if consecutive_silence >= self.silence_frames_threshold:
                         if on_speech_end:
                             on_speech_end()
-                        # Minimum duration filter: require at least 0.3s of total audio
+                        # Minimum duration filter: require at least 0.3s of total audio and minimum voiced frames
                         min_bytes = int(0.3 * self.sample_rate * self.sample_width)
-                        if len(recording) < min_bytes:
+                        if len(recording) < min_bytes or voiced_frames_count < self.min_speech_onset_frames:
                             return None
                         return bytes(recording)
 
@@ -197,7 +200,7 @@ class SpeechDetector:
             if on_speech_end:
                 on_speech_end()
             min_bytes = int(0.3 * self.sample_rate * self.sample_width)
-            if len(recording) < min_bytes:
+            if len(recording) < min_bytes or voiced_frames_count < self.min_speech_onset_frames:
                 return None
             return bytes(recording)
 

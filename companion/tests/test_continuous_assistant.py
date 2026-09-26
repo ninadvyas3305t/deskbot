@@ -129,5 +129,23 @@ class TestContinuousAssistantComponents(unittest.TestCase):
                 self.assertFalse(test_file.exists())
 
 
+    def test_audio_engine_drain_and_wake_reset(self):
+        from audio.audio_engine import AudioEngine
+        engine = AudioEngine(port="COM99")
+        engine._chunk_buffer.extend(b"\x01\x02\x03\x04")
+        engine.ring_buffer.write(b"\x01\x02\x03\x04")
+        engine._frame_queue.put_nowait(b"\x00" * engine.frame_bytes)
+
+        self.assertGreater(len(engine._chunk_buffer), 0)
+        self.assertGreater(len(engine.ring_buffer), 0)
+        self.assertFalse(engine._frame_queue.empty())
+
+        engine.drain_frames()
+
+        self.assertEqual(len(engine._chunk_buffer), 0)
+        self.assertEqual(len(engine.ring_buffer), 0)
+        self.assertTrue(engine._frame_queue.empty())
+
+
 if __name__ == "__main__":
     unittest.main()

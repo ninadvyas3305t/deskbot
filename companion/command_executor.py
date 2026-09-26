@@ -774,6 +774,8 @@ SAFE_FOLDERS: Dict[str, Path] = {
     "downloads": Path.home() / "Downloads",
     "documents": Path.home() / "Documents",
     "pictures": Path.home() / "Pictures",
+    "screenshots": Path.home() / "Pictures" / "Screenshots",
+    "screenshot": Path.home() / "Pictures" / "Screenshots",
     "desktop": Path.home() / "Desktop",
     "videos": Path.home() / "Videos",
     "music": Path.home() / "Music",
@@ -862,12 +864,18 @@ def _handle_web_search(query: Any) -> ToolResult:
     from tools.web_search import search_web
     clean_q = str(query or "").strip()
     if not clean_q:
-        return ToolResult(False, "Missing search query", "Please specify what you would like to search for.")
-    results = search_web(clean_q, max_results=3)
+        return ToolResult(False, "Missing search query", "Please specify what you would like to search for.", data=[])
+    results = search_web(clean_q, max_results=4)
     if not results:
-        return ToolResult(False, f"No results for {clean_q}", f"I couldn't find any web results for '{clean_q}'.")
+        return ToolResult(False, f"No results for {clean_q}", f"I couldn't find any web results for '{clean_q}'.", data=[])
     top_snippet = results[0]["snippet"]
     return ToolResult(True, f"Found {len(results)} results", f"Here is what I found for '{clean_q}': {top_snippet}", data=results)
+
+
+@REGISTRY.register("clarification", description_fn=lambda q: "Clarification needed")
+def _handle_clarification(query: Any) -> ToolResult:
+    text = str(query or "").strip() or "Could you please clarify what you would like me to do?"
+    return ToolResult(True, "Clarification needed", text)
 
 
 @REGISTRY.register("current_time", description_fn=lambda q: "Checking current time")
@@ -934,6 +942,8 @@ def get_action_description(intent: dict) -> str:
     """Get user-friendly string description of an intent."""
     action = intent.get("action", "unknown")
     query = intent.get("response") if "response" in intent else intent.get("query")
+    if not query and "question" in intent:
+        query = intent.get("question")
     return REGISTRY.describe(action, query)
 
 
@@ -945,6 +955,8 @@ def execute_intent(intent: dict) -> ToolResult:
 
     action = intent.get("action")
     query = intent.get("response") if "response" in intent else intent.get("query")
+    if not query and "question" in intent:
+        query = intent.get("question")
 
     if not action:
         print("Intent missing 'action' field.")

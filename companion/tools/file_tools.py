@@ -29,6 +29,8 @@ STANDARD_DIRECTORIES: Dict[str, Path] = {
     "downloads": Path.home() / "Downloads",
     "documents": Path.home() / "Documents",
     "pictures": Path.home() / "Pictures",
+    "screenshots": Path.home() / "Pictures" / "Screenshots",
+    "screenshot": Path.home() / "Pictures" / "Screenshots",
     "videos": Path.home() / "Videos",
     "music": Path.home() / "Music",
     "projects": Path.home() / "Projects",
@@ -341,10 +343,15 @@ def resolve_target_path(
 
     raw_clean = target_spec.strip()
 
-    # 1. Check if it's directly a standard folder keyword (e.g. "desktop", "downloads")
-    lower_keyword = raw_clean.lower()
-    if lower_keyword in STANDARD_DIRECTORIES:
-        return STANDARD_DIRECTORIES[lower_keyword]
+    # 1. Check if it's directly a standard folder keyword (e.g. "desktop", "downloads", "the screenshots folder")
+    norm_keyword = re.sub(r"^(?:the|my)\s+", "", raw_clean.lower()).strip()
+    norm_keyword = re.sub(r"\s+(?:folder|directory)$", "", norm_keyword).strip()
+    if norm_keyword in {"screen shot", "screen shots"}:
+        norm_keyword = "screenshots"
+    if norm_keyword in STANDARD_DIRECTORIES:
+        dest_dir = STANDARD_DIRECTORIES[norm_keyword]
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        return dest_dir
 
     # 2. Parse potential location hints (e.g. "notes.txt on Desktop", "Test inside Documents")
     target_name, location_hint = parse_location_spec(raw_clean)

@@ -74,23 +74,27 @@ class DuckDuckGoSearchProvider(WebSearchProvider):
             with urllib.request.urlopen(req, timeout=5.0) as resp:
                 raw_html = resp.read().decode("utf-8", errors="ignore")
 
-            # Extract result blocks: class="result__snippet" and class="result__title"
-            title_matches = re.findall(r'<a[^>]+class="result__url"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', raw_html)
+            # Extract real titles and links from class="result__a" and snippets from class="result__snippet"
+            titles_raw = re.findall(r'<a[^>]+class="result__a"[^>]*>(.*?)</a>', raw_html)
+            urls_raw = re.findall(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"', raw_html)
             snippet_matches = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', raw_html)
 
             for i in range(min(len(snippet_matches), max_results - len(results))):
+                title_clean = re.sub(r"<[^>]+>", "", titles_raw[i]) if i < len(titles_raw) else f"Result {len(results) + 1}"
+                title_clean = html.unescape(title_clean).strip()
                 snippet_clean = re.sub(r"<[^>]+>", "", snippet_matches[i])
                 snippet_clean = html.unescape(snippet_clean).strip()
-                url = title_matches[i][0] if i < len(title_matches) else "https://duckduckgo.com"
+                url = urls_raw[i] if i < len(urls_raw) else "https://duckduckgo.com"
                 if "uddg=" in url:
-                    # Parse encoded redirect target
                     parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
                     url = parsed.get("uddg", [url])[0]
-                results.append({
-                    "title": f"Result {len(results) + 1}",
-                    "snippet": snippet_clean,
-                    "url": url,
-                })
+
+                if snippet_clean:
+                    results.append({
+                        "title": title_clean or f"Result {len(results) + 1}",
+                        "snippet": snippet_clean,
+                        "url": url,
+                    })
         except Exception as scrape_err:
             logger.debug("DuckDuckGo HTML query fallback error: %s", scrape_err)
 

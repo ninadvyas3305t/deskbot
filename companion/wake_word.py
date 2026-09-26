@@ -18,7 +18,7 @@ SAMPLE_WIDTH = 2
 CHUNK_SAMPLES = 1280
 CHUNK_BYTES = CHUNK_SAMPLES * SAMPLE_WIDTH
 DEFAULT_MODEL = os.getenv("DESKBOT_WAKE_MODEL", "hey_jarvis")
-DEFAULT_THRESHOLD = float(os.getenv("DESKBOT_WAKE_THRESHOLD", "0.35"))
+DEFAULT_THRESHOLD = float(os.getenv("DESKBOT_WAKE_THRESHOLD", "0.50"))
 
 
 def model_label(model_reference: str) -> str:

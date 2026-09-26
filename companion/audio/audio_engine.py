@@ -50,6 +50,7 @@ class AudioEngine:
         self._lock = threading.Lock()
         self._touch_detected = False
         self._touch_lock = threading.Lock()
+        self._chunk_buffer = bytearray()
         import atexit
         atexit.register(self.stop)
 
@@ -125,8 +126,6 @@ class AudioEngine:
 
     def _reader_loop(self) -> None:
         """Background thread continuously pumping PCM bytes from serial into RingBuffer and frame queue."""
-        chunk_buffer = bytearray()
-
         while self._running:
             try:
                 if not self._ser or not self._ser.is_open:
@@ -146,14 +145,21 @@ class AudioEngine:
                 if not raw_bytes:
                     continue
 
+                # Ensure 16-bit PCM word alignment is never corrupted by odd-byte ASCII markers
+                if len(raw_bytes) % 2 != 0:
+                    raw_bytes = raw_bytes[:len(raw_bytes) - 1]
+
+                if not raw_bytes:
+                    continue
+
                 # Write directly to rolling ring buffer for immediate historical context
                 self.ring_buffer.write(raw_bytes)
-                chunk_buffer.extend(raw_bytes)
+                self._chunk_buffer.extend(raw_bytes)
 
                 # Slice into discrete frames for synchronous consumers
-                while len(chunk_buffer) >= self.frame_bytes:
-                    frame = bytes(chunk_buffer[: self.frame_bytes])
-                    del chunk_buffer[: self.frame_bytes]
+                while len(self._chunk_buffer) >= self.frame_bytes:
+                    frame = bytes(self._chunk_buffer[: self.frame_bytes])
+                    del self._chunk_buffer[: self.frame_bytes]
 
                     # Push frame to consumer queue; discard oldest if queue is saturated
                     if self._frame_queue.full():
@@ -204,12 +210,20 @@ class AudioEngine:
             return b""
 
     def drain_frames(self) -> None:
-        """Drain any frames currently in the queue to synchronize with live audio."""
+        """Drain any frames currently in the queue, serial input buffer, and partial chunk buffer."""
+        with self._lock:
+            if self._ser and self._ser.is_open:
+                try:
+                    self._ser.reset_input_buffer()
+                except Exception:
+                    pass
+        self._chunk_buffer.clear()
         while not self._frame_queue.empty():
             try:
                 self._frame_queue.get_nowait()
             except queue.Empty:
                 break
+        self.ring_buffer.clear()
 
     def send_command(self, cmd: str) -> bool:
         """Send a text command line to the ESP32 (e.g. for OLED state sync)."""

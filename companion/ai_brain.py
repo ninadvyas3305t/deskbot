@@ -45,117 +45,80 @@ VALID_ACTIONS = {
     "current_date",
     "system_info",
     "weather",
+    "clarification",
     "unknown",
 }
 
 SYSTEM_PROMPT = """
-You are the command brain for DeskBot, a Windows desktop voice assistant.
+You are the intelligent command brain for DeskBot, a Windows voice assistant.
 
 Your job is to understand the user's natural-language command and return
-EXACTLY ONE JSON object describing the intended action.
+EXACTLY ONE JSON object classifying the intent and describing the action.
 
-Supported actions:
+Intent Categories:
 
-1. direct_answer: Answer general knowledge questions, definitions, science, math, explanations, or programming questions directly using your own reasoning.
-   {"action": "direct_answer", "response": "The square root of 64 is 8."}
-   {"action": "direct_answer", "response": "A neural network is a machine learning model inspired by the structure of biological neurons."}
-2. calculate: Evaluate an arithmetic or math calculation.
-   {"action": "calculate", "query": "25 * 16"}
-3. open_file_explorer: Open Windows File Explorer.
-   {"action": "open_file_explorer"}
-4. open_folder: Open a specific folder by name or path (Downloads, Documents, Desktop, Pictures, Projects, DeskBot, etc.).
-   {"action": "open_folder", "query": "Downloads"}
-5. create_file: Create a file on Desktop or specified location.
-   {"action": "create_file", "query": "notes.txt on my Desktop"}
-6. create_folder: Create a folder on Desktop or specified location.
-   {"action": "create_folder", "query": "Test inside my Desktop"}
-7. delete_file: Delete a file safely from Desktop or specified location.
-   {"action": "delete_file", "query": "notes.txt on my Desktop"}
-8. delete_folder: Delete a folder safely from Desktop or specified location.
-   {"action": "delete_folder", "query": "Test on my Desktop"}
-9. open_file: Open a file with its default system app (e.g. text file, image, document).
-   {"action": "open_file", "query": "test.txt"}
-8. open_in_vscode: Open a file or folder in VS Code (e.g. "open main.py in VS Code", "open ai_brain.py", "open this folder in VS Code").
-   {"action": "open_in_vscode", "query": "main.py"}
-9. open_project_in_vscode: Open the DeskBot project folder in VS Code.
-   {"action": "open_project_in_vscode"}
-10. open_app: Open an application (e.g. "open notepad", "launch calculator", "start epic games").
-   {"action": "open_app", "query": "Notepad"}
-11. open_website: Open a website or domain (e.g. "open youtube", "open google.com").
-   {"action": "open_website", "query": "youtube.com"}
-12. youtube_search: Search YouTube (e.g. "search youtube for tutorials").
-   {"action": "youtube_search", "query": "tutorials"}
-13. youtube_play: Play a song, video, artist, or music.
-   {"action": "youtube_play", "query": "Bohemian Rhapsody"}
-   (or {"action": "youtube_play", "query": null} for vague "play music")
-14. spotify_open: Open the Spotify desktop application.
-   {"action": "spotify_open"}
-15. spotify_play: Play music specifically on Spotify.
-   {"action": "spotify_play", "query": "Starboy"}
-16. volume_up: Increase system volume / make it louder.
-   {"action": "volume_up"}
-17. volume_down: Decrease system volume / make it quieter.
-   {"action": "volume_down"}
-18. mute: Mute system audio / sound.
-   {"action": "mute"}
-19. unmute: Unmute system audio.
-   {"action": "unmute"}
-20. screenshot: Take a screenshot of the desktop screen.
-   {"action": "screenshot"}
-21. close_app: Close an application safely (e.g. "close spotify", "quit notepad", "exit chrome").
-   {"action": "close_app", "query": "Spotify"}
-22. web_search: Search the web / internet ONLY when explicitly requested or for live real-time information (e.g. "search the web for...", "google...", "what's the latest NVIDIA GPU?").
-   {"action": "web_search", "query": "what is the latest NVIDIA GPU"}
-23. current_time: Ask for the current time.
-   {"action": "current_time"}
-24. current_date: Ask for the current date or day.
-   {"action": "current_date"}
-25. system_info: Check PC performance, CPU usage, RAM usage, or battery status.
-   {"action": "system_info"}
-26. weather: Check current weather.
-   {"action": "weather", "query": "Tokyo"} (or {"action": "weather", "query": null} for local)
-27. unknown: Returned if the command cannot be mapped to any supported action.
-   {"action": "unknown"}
+1. DIRECT_ANSWER:
+   - For general knowledge, definitions, math, science, explanations, programming, geography, and history.
+   - The assistant already knows these facts from its training. DO NOT search the web!
+   - Provide a natural, concise spoken answer in the "response" field (1-3 sentences, ready for text-to-speech).
+   - Examples:
+     * "What is the capital of India?" -> {"type": "DIRECT_ANSWER", "action": "direct_answer", "response": "The capital of India is New Delhi."}
+     * "What is the square root of 64?" -> {"type": "DIRECT_ANSWER", "action": "direct_answer", "response": "The square root of 64 is 8."}
+     * "What is a neural network?" -> {"type": "DIRECT_ANSWER", "action": "direct_answer", "response": "A neural network is a machine learning model inspired by the structure of biological neurons."}
+     * "Explain PCA." -> {"type": "DIRECT_ANSWER", "action": "direct_answer", "response": "PCA, or Principal Component Analysis, is a technique used to reduce the dimensionality of large datasets while preserving as much variance as possible."}
+     * "What does HTTP stand for?" -> {"type": "DIRECT_ANSWER", "action": "direct_answer", "response": "HTTP stands for Hypertext Transfer Protocol."}
+     * "Who invented the telephone?" -> {"type": "DIRECT_ANSWER", "action": "direct_answer", "response": "Alexander Graham Bell is widely credited with inventing the first practical telephone."}
 
+2. WEB_SEARCH (CURRENT_INFORMATION):
+   - Use ONLY when external, real-time, or current information is required that depends on what is happening now, today, or recently.
+   - Indicator words: "latest", "today", "right now", "currently", "recent", "this week", "this month", breaking news, live events, sports scores, market prices.
+   - FOLLOW-UP CONTEXT RULE: If recent conversation was discussing a specific topic (e.g. news in India) and the user asks a follow-up (e.g. "Tell me about sports news"), incorporate the topic into the search query (e.g. "latest sports news India").
+   - Examples:
+     * "Can you tell me the news in India?" -> {"type": "WEB_SEARCH", "action": "web_search", "query": "latest news in India"}
+     * "Tell me about sports news." (after India news) -> {"type": "WEB_SEARCH", "action": "web_search", "query": "latest sports news India"}
+     * "Is there any special event happening in India right now?" -> {"type": "WEB_SEARCH", "action": "web_search", "query": "major events in India today right now"}
+     * "What happened in cricket today?" -> {"type": "WEB_SEARCH", "action": "web_search", "query": "cricket news scores today"}
+     * "What is the current price of Bitcoin?" -> {"type": "WEB_SEARCH", "action": "web_search", "query": "current price of Bitcoin USD"}
+     * "What's the latest NVIDIA news?" -> {"type": "WEB_SEARCH", "action": "web_search", "query": "latest NVIDIA news announcements"}
+
+3. TOOL_CALL:
+   - For local desktop and PC system operations:
+     * open_app: {"type": "TOOL_CALL", "action": "open_app", "query": "Notepad"}
+     * close_app: {"type": "TOOL_CALL", "action": "close_app", "query": "Spotify"}
+     * create_file: {"type": "TOOL_CALL", "action": "create_file", "query": "notes.txt on my Desktop"}
+     * delete_file: {"type": "TOOL_CALL", "action": "delete_file", "query": "notes.txt on my Desktop"}
+     * create_folder: {"type": "TOOL_CALL", "action": "create_folder", "query": "Test on Desktop"}
+     * delete_folder: {"type": "TOOL_CALL", "action": "delete_folder", "query": "Test on Desktop"}
+     * open_file: {"type": "TOOL_CALL", "action": "open_file", "query": "test.txt"}
+     * open_folder: {"type": "TOOL_CALL", "action": "open_folder", "query": "Downloads"}
+     * open_file_explorer: {"type": "TOOL_CALL", "action": "open_file_explorer"}
+     * open_in_vscode: {"type": "TOOL_CALL", "action": "open_in_vscode", "query": "main.py"}
+     * open_project_in_vscode: {"type": "TOOL_CALL", "action": "open_project_in_vscode"}
+     * screenshot: {"type": "TOOL_CALL", "action": "screenshot"}
+     * volume_up: {"type": "TOOL_CALL", "action": "volume_up"}
+     * volume_down: {"type": "TOOL_CALL", "action": "volume_down"}
+     * mute: {"type": "TOOL_CALL", "action": "mute"}
+     * unmute: {"type": "TOOL_CALL", "action": "unmute"}
+     * youtube_play: {"type": "TOOL_CALL", "action": "youtube_play", "query": "Bohemian Rhapsody"}
+     * youtube_search: {"type": "TOOL_CALL", "action": "youtube_search", "query": "guitar tutorials"}
+     * spotify_play: {"type": "TOOL_CALL", "action": "spotify_play", "query": "Starboy"}
+     * spotify_open: {"type": "TOOL_CALL", "action": "spotify_open"}
+     * open_website: {"type": "TOOL_CALL", "action": "open_website", "query": "youtube.com"}
+     * current_time: {"type": "TOOL_CALL", "action": "current_time"}
+     * current_date: {"type": "TOOL_CALL", "action": "current_date"}
+     * system_info: {"type": "TOOL_CALL", "action": "system_info"}
+     * weather: {"type": "TOOL_CALL", "action": "weather", "query": "Tokyo"}
+     * calculate: {"type": "TOOL_CALL", "action": "calculate", "query": "25 * 16"}
+
+4. CLARIFICATION:
+   - Use only when user request is too underspecified to proceed safely:
+     {"type": "CLARIFICATION", "action": "clarification", "question": "Which file would you like me to delete?", "response": "Which file would you like me to delete?"}
 
 CRITICAL RULES:
-
-1. DIRECT ANSWER VS WEB SEARCH (CRITICAL):
-   - For ordinary knowledge, definitions, explanations, science, history, coding questions, and math:
-     You MUST choose "direct_answer" and provide a concise, friendly spoken response in the "response" field (1-2 sentences, ready for text-to-speech).
-     DO NOT choose "web_search" for questions you can answer directly.
-   - ONLY choose "web_search" if the user explicitly asks to search the web/google (e.g. "search the web for...", "google..."), or asks about live current events / real-time news / live prices (e.g. "latest NVIDIA GPU", "today's news", "current price of Bitcoin").
-
-2. DEFAULT MUSIC/VIDEO PLATFORM:
-   - When the user asks to play a song, video, artist, or music WITHOUT explicitly specifying Spotify (e.g. "play Bohemian Rhapsody", "play Loser by Tame Impala", "play some music", "play Starboy"), you MUST ALWAYS choose "youtube_play".
-   - ONLY choose "spotify_play" if the user explicitly mentions Spotify (e.g. "play Starboy on Spotify", "play it on Spotify").
-
-3. STRICT FORMATTING:
-   - Output ONLY the raw JSON object.
-   - Do NOT include any explanations, internal reasoning, chain-of-thought, or markdown codeblocks.
-   - The very first character of your response MUST be '{' and the last character MUST be '}'.
-
-4. ACTION DETAILS:
-   - For direct_answer, provide the natural concise answer in the "response" field.
-   - For open_app, always use the key "query" for the application name (e.g. "Notepad", "Calculator", "Task Manager", "Paint", "Settings", "Epic Games", "Chrome"). Never use "app".
-   - For close_app, always use "query" for the application name to terminate.
-   - For open_folder, use "query" for the folder name (e.g. "Downloads", "Documents", "Projects").
-   - For web_search, use "query" for the search query/terms.
-   - For weather, use "query" for the city/location (e.g. "Tokyo", "London"), or null for local.
-
-5. CONVERSATION CONTEXT & PRONOUN RESOLUTION:
-   - Resolve pronouns ("it", "that", "that song", "close it") using recent conversation turns if provided.
-   - For example: if user opened Spotify in previous turn and says "close it", return {"action": "close_app", "query": "Spotify"}.
-   - If user asked about weather in Tokyo and then says "What about London?", return {"action": "weather", "query": "London"}.
-
-JSON format:
-
-{
-  "action": "direct_answer",
-  "response": "The square root of 64 is 8."
-}
+1. NEVER use "web_search" for questions you can answer directly (math, science, definitions, stable knowledge).
+2. ONLY use "web_search" for live/current events, breaking news, or explicit web queries.
+3. Output ONLY the raw JSON object. The first character must be '{' and last character must be '}'.
 """
-
 
 _CONVERSATION_TURNS: List[dict[str, str]] = []
 
@@ -181,9 +144,19 @@ def create_client() -> OpenAI:
 
 
 def validate_intent(intent: Any) -> Tuple[bool, str]:
-    """Validate parsed JSON intent against the expected schema."""
+    """Validate parsed JSON intent against the expected schema and normalize intent taxonomy."""
     if not isinstance(intent, dict):
         return False, "Intent must be a JSON dictionary."
+
+    # Normalize type -> action if action was omitted
+    if "type" in intent and "action" not in intent:
+        intent_type = str(intent["type"]).upper().strip()
+        if intent_type == "DIRECT_ANSWER":
+            intent["action"] = "direct_answer"
+        elif intent_type in {"WEB_SEARCH", "CURRENT_INFORMATION"}:
+            intent["action"] = "web_search"
+        elif intent_type == "CLARIFICATION":
+            intent["action"] = "clarification"
 
     action = intent.get("action")
     if not action or not isinstance(action, str):
@@ -193,6 +166,22 @@ def validate_intent(intent: Any) -> Tuple[bool, str]:
         return False, f"Unsupported action: '{action}'"
 
     return True, ""
+
+
+def get_intent_type(intent: dict) -> str:
+    """Get standardized intent category (DIRECT_ANSWER, WEB_SEARCH, TOOL_CALL, CLARIFICATION)."""
+    if not isinstance(intent, dict):
+        return "UNKNOWN"
+    if "type" in intent and intent["type"]:
+        return str(intent["type"]).upper().strip()
+    action = intent.get("action", "")
+    if action == "direct_answer":
+        return "DIRECT_ANSWER"
+    if action == "web_search":
+        return "WEB_SEARCH"
+    if action == "clarification":
+        return "CLARIFICATION"
+    return "TOOL_CALL"
 
 
 def resolve_contextual_target(reference_text: str, is_folder: bool = False) -> str | None:
@@ -300,7 +289,7 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
                 val = None
                 if val_match and val_match.group(1) is not None:
                     val = val_match.group(1)
-                if act == "direct_answer":
+                if act in {"direct_answer", "clarification"}:
                     return {"action": act, "response": val}
                 return {"action": act, "query": val}
 
@@ -417,10 +406,19 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
         elif ext in {"txt", "pdf", "docx", "doc", "png", "jpg", "jpeg", "csv", "log"}:
             return {"action": "open_file", "query": full_file_spec}
 
-    # Rule 0B: Open safe folders
-    folder_match = re.search(r"\b(?:open|show|explore)(?:\s+my)?\s+(downloads|documents|pictures|desktop|videos|music|projects|deskbot)(?:\s+folder|\s+directory)?\b", cleaned_speech)
-    if folder_match:
-        return {"action": "open_folder", "query": folder_match.group(1)}
+    # Rule 0B: Open safe folders (screenshots, pictures, downloads, documents, desktop, etc.)
+    is_open_intent = bool(re.search(r"\b(?:open|show|explore|view|browse|take\s+me\s+to|bring\s+up|where(?:\s+is|\s+are|\s+did|\s+your|\s+you)?)\b", cleaned_speech))
+
+    if is_open_intent:
+        # Check screenshot folder references first
+        if re.search(r"\b(?:screenshots?|screen\s*shots?)\b", cleaned_speech):
+            return {"action": "open_folder", "query": "screenshots"}
+
+        # General safe folder opening: handles "open pictures folder", "open the folder pictures", "open downloads", etc.
+        folder_pattern = r"\b(?:open|show|explore|view|browse)(?:\s+(?:my|the))?\s+(?:(?:folder|directory)\s+)?(downloads|documents|pictures|desktop|videos|music|projects|deskbot)(?:\s+(?:folder|directory))?\b"
+        folder_match = re.search(folder_pattern, cleaned_speech)
+        if folder_match:
+            return {"action": "open_folder", "query": folder_match.group(1)}
 
     # Rule 0C: Volume / Audio Controls
     if re.search(r"\b(?:unmute|un-mute)\b", cleaned_speech):
@@ -432,9 +430,12 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
     if re.search(r"\b(?:volume\s*(?:down|decrease|lower|drop|softer|quieter)|softer|quieter|turn\s*it\s*down)\b", cleaned_speech):
         return {"action": "volume_down"}
 
-    # Rule 0D: Screenshot
-    if re.search(r"\b(?:take\s*(?:a\s*)?)?screenshot\b|\bcapture\s*(?:the\s*)?screen\b", cleaned_speech):
-        return {"action": "screenshot"}
+    # Rule 0D: Screenshot Capture (strictly requires capture verb or standalone screenshot, never triggers on open/view/where)
+    if not is_open_intent and not re.search(r"\b(?:delete|remove|erase|where|find)\b", cleaned_speech):
+        if re.search(r"\b(?:take|capture|grab|snap|make|shoot)(?:\s+(?:a|the))?\s+(?:screenshot|screen\s*shot|screen\s*capture)\b", cleaned_speech) or \
+           re.search(r"\bcapture\s+(?:the\s+)?screen\b", cleaned_speech) or \
+           cleaned_speech in {"screenshot", "take screenshot", "take a screenshot", "capture screen", "screen capture"}:
+            return {"action": "screenshot"}
 
     # Rule 0E: Close app
     close_match = re.search(r"^(?:close|quit|exit|kill|terminate)(?:\s+(?:the|app|application))?\s+([a-zA-Z0-9_\- ]+)", cleaned_speech)
@@ -612,6 +613,118 @@ def understand_intent(command: str, context_prompt: str = "") -> dict | None:
         return {"action": "unknown", "query": None}
 
     return parsed
+
+
+SYNTHESIS_SYSTEM_PROMPT = """You are the voice reasoning layer of DeskBot, an intelligent Windows voice assistant.
+
+Your task is to synthesize raw web search results into a concise, natural, spoken answer for the user.
+The answer will be spoken aloud to the user using text-to-speech.
+
+Guidelines:
+1. Synthesize the facts, dates, sources, and developments into 2 to 4 natural, spoken sentences.
+2. DO NOT say "Here is what I found for..." or read raw snippets or cite full URLs.
+3. Speak naturally and authoritatively like an intelligent assistant (e.g., "According to recent reports...", "In recent developments...").
+4. If the search results do NOT contain enough information to confirm the user's specific question or event, be honest:
+   For example: "I couldn't find a reliable source confirming a major event happening right now."
+   DO NOT fabricate facts or hallucinate details not grounded in the search results.
+5. Keep the language clear, conversational, and direct for audio delivery.
+"""
+
+
+def _update_last_assistant_turn(user_query: str, search_query: str, answer: str) -> None:
+    """Update or append turn history with synthesized answer for seamless follow-up reasoning."""
+    if _CONVERSATION_TURNS and _CONVERSATION_TURNS[-1].get("role") == "assistant":
+        try:
+            prev = json.loads(_CONVERSATION_TURNS[-1]["content"])
+            if isinstance(prev, dict) and prev.get("action") == "web_search":
+                prev["answer"] = answer
+                _CONVERSATION_TURNS[-1]["content"] = json.dumps(prev)
+                return
+        except Exception:
+            pass
+        _CONVERSATION_TURNS[-1]["content"] = answer
+    else:
+        _CONVERSATION_TURNS.append({"role": "user", "content": user_query})
+        _CONVERSATION_TURNS.append({"role": "assistant", "content": answer})
+
+
+def synthesize_web_answer(
+    user_query: str,
+    search_query: str,
+    results: list[dict[str, Any]],
+    context_prompt: str = "",
+) -> str:
+    """Synthesize live search results into a concise, natural, spoken answer (2-4 sentences).
+
+    Separates information retrieval from answer generation: analyzes facts, dates,
+    sources, and developments into voice-ready text-to-speech phrasing.
+    """
+    if not results:
+        return f"I searched for '{search_query}', but couldn't find any relevant web results."
+
+    # Format search results cleanly for the LLM
+    formatted_results = []
+    for i, r in enumerate(results[:4], 1):
+        title = r.get("title", f"Result {i}").strip()
+        snippet = r.get("snippet", "").strip()
+        url = r.get("url", "").strip()
+        formatted_results.append(f"[{i}] {title}\nSummary: {snippet}\nSource URL: {url}")
+    search_content = "\n\n".join(formatted_results)
+
+    user_prompt = f"""User Question: "{user_query}"
+Search Query: "{search_query}"
+
+Search Results:
+{search_content}
+
+Synthesize a 2-4 sentence spoken answer based strictly on the search results above."""
+
+    api_key = os.getenv("NVIDIA_API_KEY")
+    if not api_key:
+        # Graceful offline fallback: extract top snippets cleanly
+        top = results[0]
+        top_title = top.get("title", "")
+        top_snippet = top.get("snippet", "")
+        if top_title and top_snippet:
+            return f"According to {top_title}: {top_snippet}"
+        elif top_snippet:
+            return top_snippet
+        return f"Found results for '{search_query}', but could not generate a summary."
+
+    try:
+        client = create_client()
+        messages = [
+            {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
+        ]
+        if context_prompt:
+            messages.append({"role": "system", "content": f"Recent Conversation Context:\n{context_prompt}"})
+
+        messages.append({"role": "user", "content": user_prompt})
+
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            temperature=0.2,
+            max_tokens=300,
+        )
+
+        synthesized = response.choices[0].message.content
+        if synthesized and synthesized.strip():
+            answer = synthesized.strip()
+            # Update conversational turn history with the synthesized spoken answer
+            _update_last_assistant_turn(user_query, search_query, answer)
+            return answer
+
+    except Exception as error:
+        logger.warning("Answer synthesis failed: %s", error)
+
+    # Fallback if synthesis call errors
+    top = results[0]
+    top_title = top.get("title", "")
+    top_snippet = top.get("snippet", "")
+    if top_title and top_snippet:
+        return f"According to {top_title}: {top_snippet}"
+    return top_snippet or f"Here is what I found for '{search_query}'."
 
 
 def main() -> int:
