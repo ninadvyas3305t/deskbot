@@ -50,7 +50,8 @@ class TestActionRegistry(unittest.TestCase):
         self.assertIn("Notepad", desc)
         success = command_executor.execute_intent(intent)
         self.assertTrue(success)
-        mock_launch.assert_called_with("notepad.exe")
+        expected = "TextEdit" if sys.platform == "darwin" else "notepad.exe"
+        mock_launch.assert_called_with(expected)
 
     @patch("command_executor._launch_target")
     def test_launch_calculator(self, mock_launch):
@@ -58,7 +59,8 @@ class TestActionRegistry(unittest.TestCase):
         intent = {"action": "open_app", "query": "Calculator"}
         success = command_executor.execute_intent(intent)
         self.assertTrue(success)
-        mock_launch.assert_called_with("calc.exe")
+        expected = "Calculator" if sys.platform == "darwin" else "calc.exe"
+        mock_launch.assert_called_with(expected)
 
     def test_unknown_action(self):
         intent = {"action": "unknown"}
@@ -256,13 +258,20 @@ class TestAIBrainValidation(unittest.TestCase):
 
 class TestAppResolution(unittest.TestCase):
     def test_find_common_system_apps(self):
-        self.assertEqual(command_executor.find_installed_app("calculator"), "calc.exe")
-        self.assertEqual(command_executor.find_installed_app("the calculator app"), "calc.exe")
-        self.assertEqual(command_executor.find_installed_app("paint"), "mspaint.exe")
-        self.assertEqual(command_executor.find_installed_app("task manager"), "taskmgr.exe")
-        self.assertEqual(command_executor.find_installed_app("settings"), "ms-settings:")
-        self.assertEqual(command_executor.find_installed_app("file explorer"), "explorer.exe")
-        self.assertEqual(command_executor.find_installed_app("terminal"), "wt.exe")
+        if sys.platform == "darwin":
+            self.assertEqual(command_executor.find_installed_app("calculator"), "Calculator")
+            self.assertEqual(command_executor.find_installed_app("the calculator app"), "Calculator")
+            self.assertEqual(command_executor.find_installed_app("settings"), "System Settings")
+            self.assertEqual(command_executor.find_installed_app("file explorer"), "Finder")
+            self.assertEqual(command_executor.find_installed_app("terminal"), "Terminal")
+        else:
+            self.assertEqual(command_executor.find_installed_app("calculator"), "calc.exe")
+            self.assertEqual(command_executor.find_installed_app("the calculator app"), "calc.exe")
+            self.assertEqual(command_executor.find_installed_app("paint"), "mspaint.exe")
+            self.assertEqual(command_executor.find_installed_app("task manager"), "taskmgr.exe")
+            self.assertEqual(command_executor.find_installed_app("settings"), "ms-settings:")
+            self.assertEqual(command_executor.find_installed_app("file explorer"), "explorer.exe")
+            self.assertEqual(command_executor.find_installed_app("terminal"), "wt.exe")
 
     def test_find_best_shortcut(self):
         shortcuts = [
@@ -325,11 +334,12 @@ class TestYouTubeAndSpotifyHelpers(unittest.TestCase):
     @patch("command_executor._bring_spotify_to_front")
     @patch("time.sleep")
     def test_spotify_trigger_keys(self, mock_sleep, mock_bring, mock_send):
-        command_executor._trigger_spotify_play()
-        sent_keys = [call.args[0] for call in mock_send.call_args_list]
-        self.assertIn(0x09, sent_keys)
-        self.assertIn(0x0D, sent_keys)
-        self.assertNotIn(0xB3, sent_keys)
+        with patch("sys.platform", "win32"):
+            command_executor._trigger_spotify_play()
+            sent_keys = [call.args[0] for call in mock_send.call_args_list]
+            self.assertIn(0x09, sent_keys)
+            self.assertIn(0x0D, sent_keys)
+            self.assertNotIn(0xB3, sent_keys)
 
 
 class TestDirectAnswerAndMathRouting(unittest.TestCase):

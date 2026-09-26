@@ -43,6 +43,13 @@ FORBIDDEN_ROOTS = [
     Path(os.environ.get("ProgramFiles", "C:/Program Files")).resolve(),
     Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")).resolve(),
     Path("C:/").resolve(),
+    Path("/System").resolve(),
+    Path("/Library").resolve(),
+    Path("/usr").resolve(),
+    Path("/bin").resolve(),
+    Path("/sbin").resolve(),
+    Path("/etc").resolve(),
+    Path("/").resolve(),
 ]
 
 
@@ -50,8 +57,9 @@ def is_path_safe(p: Path) -> bool:
     """Verify that a path does not target sensitive system roots."""
     try:
         resolved = p.resolve()
+        roots_to_ignore_parents = {Path("C:/").resolve(), Path("/").resolve()}
         for forbidden in FORBIDDEN_ROOTS:
-            if resolved == forbidden or (forbidden != Path("C:/").resolve() and forbidden in resolved.parents):
+            if resolved == forbidden or (forbidden not in roots_to_ignore_parents and forbidden in resolved.parents):
                 return False
         return True
     except Exception:
@@ -390,10 +398,29 @@ def resolve_target_path(
 
 # --- Deterministic Tool Operations ---
 
+def launch_path(target: Path | str) -> None:
+    """Launch file or folder using native OS launcher."""
+    p_str = str(target)
+    if sys.platform == "win32":
+        if hasattr(os, "startfile"):
+            os.startfile(p_str)
+        else:
+            subprocess.Popen(["explorer.exe", p_str], shell=False)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", p_str], shell=False)
+    else:
+        subprocess.Popen(["xdg-open", p_str], shell=False)
+
+
 def open_file_explorer() -> ToolResult:
-    """Launch Windows File Explorer."""
+    """Launch native File Explorer / Finder."""
     try:
-        subprocess.Popen(["explorer.exe"], shell=False)
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer.exe"], shell=False)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "."], shell=False)
+        else:
+            subprocess.Popen(["xdg-open", "."], shell=False)
         return ToolResult(True, "File Explorer opened", "Opening File Explorer.")
     except Exception as err:
         logger.error("Failed to open File Explorer: %s", err)
@@ -401,7 +428,7 @@ def open_file_explorer() -> ToolResult:
 
 
 def open_folder(folder_spec: str) -> ToolResult:
-    """Open a validated folder in Windows Explorer."""
+    """Open a validated folder in Windows Explorer or macOS Finder."""
     clean = (folder_spec or "").strip()
     if not clean:
         return open_file_explorer()
@@ -416,7 +443,7 @@ def open_folder(folder_spec: str) -> ToolResult:
         path = path.parent
 
     try:
-        subprocess.Popen(["explorer.exe", str(path)], shell=False)
+        launch_path(path)
         folder_display = path.name if path.name else str(path)
         return ToolResult(True, f"Opened folder {path}", f"Opening {folder_display}.")
     except Exception as err:
@@ -449,7 +476,12 @@ def create_file(file_spec: str, content: str = "") -> ToolResult:
 
     try:
         target_path.write_text(content, encoding="utf-8")
-        location_desc = "on your Desktop" if target_parent == STANDARD_DIRECTORIES["desktop"] else f"in {target_parent.name}"
+        is_desktop = False
+        try:
+            is_desktop = target_parent.resolve() == STANDARD_DIRECTORIES["desktop"].resolve()
+        except Exception:
+            is_desktop = target_parent == STANDARD_DIRECTORIES["desktop"]
+        location_desc = "on your Desktop" if is_desktop else f"in {target_parent.name}"
         return ToolResult(True, f"Created {target_path}", f"Created {target_path.name} {location_desc}.")
     except Exception as err:
         logger.error("Failed to create file '%s': %s", target_path, err)
@@ -474,7 +506,12 @@ def create_folder(folder_spec: str) -> ToolResult:
 
     try:
         target_path.mkdir(parents=True, exist_ok=True)
-        location_desc = "on your Desktop" if target_path.parent == STANDARD_DIRECTORIES["desktop"] else f"in {target_path.parent.name}"
+        is_desktop = False
+        try:
+            is_desktop = target_path.parent.resolve() == STANDARD_DIRECTORIES["desktop"].resolve()
+        except Exception:
+            is_desktop = target_path.parent == STANDARD_DIRECTORIES["desktop"]
+        location_desc = "on your Desktop" if is_desktop else f"in {target_path.parent.name}"
         return ToolResult(True, f"Created folder {target_path}", f"Created folder {target_path.name} {location_desc}.")
     except Exception as err:
         logger.error("Failed to create folder '%s': %s", target_path, err)
@@ -482,7 +519,7 @@ def create_folder(folder_spec: str) -> ToolResult:
 
 
 def open_file(file_spec: str) -> ToolResult:
-    """Open an existing file with its default Windows application, resolving strong candidates."""
+    """Open an existing file with its default application, resolving strong candidates."""
     clean = (file_spec or "").strip()
     if not clean:
         return ToolResult(False, "Missing filename", "Please specify the file you would like to open.")
@@ -505,7 +542,7 @@ def open_file(file_spec: str) -> ToolResult:
         return ToolResult(False, "Path forbidden", "Opening files in system directories is not allowed.")
 
     try:
-        os.startfile(str(target_path))
+        launch_path(target_path)
         return ToolResult(True, f"Opened file {target_path}", f"Opening {target_path.name}.")
     except Exception as err:
         logger.error("Failed to open file '%s': %s", target_path, err)
@@ -540,7 +577,14 @@ def open_in_vscode(target_spec: str = "") -> ToolResult:
         return ToolResult(False, "Path forbidden", "Opening paths in system directories is not allowed.")
 
     try:
-        subprocess.Popen(["cmd", "/c", "code", str(target_path)], shell=False)
+        if sys.platform == "darwin":
+            try:
+                subprocess.Popen(["code", str(target_path)], shell=False)
+            except Exception:
+                subprocess.Popen(["open", "-a", "Visual Studio Code", str(target_path)], shell=False)
+        else:
+            subprocess.Popen(["cmd", "/c", "code", str(target_path)], shell=False)
+
         display_name = target_path.name if target_path.name else str(target_path)
         return ToolResult(True, f"Opened {target_path} in VS Code", f"Opening {display_name} in VS Code.")
     except Exception as err:

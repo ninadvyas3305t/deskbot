@@ -15,6 +15,10 @@ from companion.tts.factory import (
 from companion.tts.windows_sapi import WindowsSAPITTSEngine
 
 
+import sys
+from companion.tts.macos_say import MacOSSayTTSEngine
+
+
 class TestTTSAbstraction(unittest.TestCase):
     """Test BaseTTSEngine, MockTTSEngine, and Factory behaviors."""
 
@@ -65,6 +69,32 @@ class TestTTSAbstraction(unittest.TestCase):
         stop_speaking()
         self.assertFalse(mock_engine.is_speaking())
 
+    @unittest.skipUnless(sys.platform == "darwin", "macOS Say TTS requires Darwin OS")
+    def test_macos_say_initialization_and_voices(self):
+        """Test macOS Say engine on Darwin environment."""
+        engine = MacOSSayTTSEngine(rate=1, volume=100)
+        self.assertIsInstance(engine, BaseTTSEngine)
+        voices = engine.get_voices()
+        self.assertIsInstance(voices, list)
+        self.assertGreaterEqual(len(voices), 1)
+        if len(voices) > 0:
+            self.assertTrue(engine.set_voice(0))
+        engine.set_rate(2)
+        engine.set_volume(80)
+        self.assertFalse(engine.speak(""))
+        self.assertFalse(engine.speak("   "))
+        engine.stop()
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS Say TTS requires Darwin OS")
+    def test_macos_say_safe_execution(self):
+        """Test that macOS say speak executes and can be interrupted."""
+        engine = MacOSSayTTSEngine(rate=2, volume=50)
+        res = engine.speak("Testing DeskBot TTS", block=False)
+        self.assertTrue(res)
+        engine.stop()
+        self.assertFalse(engine.is_speaking())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows SAPI requires Windows OS")
     def test_windows_sapi_initialization_and_voices(self):
         """Test Windows SAPI engine on Windows environment."""
         engine = WindowsSAPITTSEngine(rate=1, volume=100)
@@ -72,7 +102,6 @@ class TestTTSAbstraction(unittest.TestCase):
 
         voices = engine.get_voices()
         self.assertIsInstance(voices, list)
-        # On Windows there should be at least 1 voice installed (David or Zira)
         self.assertGreaterEqual(len(voices), 1)
 
         # Voice selection
@@ -90,10 +119,10 @@ class TestTTSAbstraction(unittest.TestCase):
         # Stop when idle must not crash
         engine.stop()
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows SAPI requires Windows OS")
     def test_windows_sapi_safe_execution(self):
         """Test that SAPI speak executes without error and can be interrupted."""
         engine = WindowsSAPITTSEngine(rate=2, volume=50)
-        # Non-blocking speak
         res = engine.speak("Testing DeskBot TTS", block=False)
         self.assertTrue(res)
 

@@ -18,7 +18,7 @@ SAMPLE_WIDTH = 2
 CHUNK_SAMPLES = 1280
 CHUNK_BYTES = CHUNK_SAMPLES * SAMPLE_WIDTH
 DEFAULT_MODEL = os.getenv("DESKBOT_WAKE_MODEL", "hey_jarvis")
-DEFAULT_THRESHOLD = float(os.getenv("DESKBOT_WAKE_THRESHOLD", "0.50"))
+DEFAULT_THRESHOLD = float(os.getenv("DESKBOT_WAKE_THRESHOLD", "0.45"))
 
 
 def model_label(model_reference: str) -> str:
@@ -48,8 +48,19 @@ def create_model(model_reference: str) -> tuple[Model, str]:
             "Set DESKBOT_WAKE_MODEL to a built-in model name or a valid .onnx/.tflite path."
         )
 
+    try:
+        model = Model(wakeword_models=[model_reference], inference_framework="onnx")
+    except Exception as err:
+        try:
+            import openwakeword.utils
+            print("Downloading missing openWakeWord model files...")
+            openwakeword.utils.download_models()
+            model = Model(wakeword_models=[model_reference], inference_framework="onnx")
+        except Exception:
+            raise err
+
     return (
-        Model(wakeword_models=[model_reference], inference_framework="onnx"),
+        model,
         model_label(model_reference),
     )
 

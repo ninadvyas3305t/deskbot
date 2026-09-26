@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 # --- Paths ---
@@ -34,13 +35,58 @@ def _load_env() -> None:
 
 _load_env()
 
+# --- SSL Certificate Configuration (Resolves macOS missing root certs) ---
+try:
+    import ssl
+    import certifi
+    ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
+    if "SSL_CERT_FILE" not in os.environ:
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+except Exception:
+    pass
+
 WORKSPACE_ROOT = Path(os.getenv("DESKBOT_WORKSPACE_ROOT", str(PROJECT_ROOT)))
 COMMAND_AUDIO_PATH = COMPANION_DIR / "last_command.wav"
 SCRATCH_DIR = COMPANION_DIR / "scratch"
 
 
 # --- Hardware Serial (ESP32) ---
-DEFAULT_PORT = os.getenv("DESKBOT_PORT", "COM4")
+def _detect_default_port() -> str:
+    env_port = os.getenv("DESKBOT_PORT")
+    if env_port:
+        return env_port
+
+    try:
+        import serial.tools.list_ports
+        ports = list(serial.tools.list_ports.comports())
+        if ports:
+            # Prioritize known ESP32 / USB-Serial chipsets (WCH, Silicon Labs, Espressif)
+            usb_ports = [
+                p.device
+                for p in ports
+                if any(k in (p.description or "").lower() or k in (p.hwid or "").lower() or k in p.device.lower()
+                       for k in ("usbmodem", "usbserial", "ch34", "cp210", "espressif", "usb single serial", "ftdi"))
+            ]
+            if usb_ports:
+                return usb_ports[0]
+            if ports:
+                return ports[0].device
+    except Exception:
+        pass
+
+    if sys.platform == "darwin":
+        import glob
+        ports = glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/cu.usbserial*")
+        return ports[0] if ports else "/dev/cu.usbmodem1101"
+    elif sys.platform == "win32":
+        return "COM4"
+    else:
+        import glob
+        ports = glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")
+        return ports[0] if ports else "/dev/ttyUSB0"
+
+
+DEFAULT_PORT = _detect_default_port()
 DEFAULT_BAUD = int(os.getenv("DESKBOT_BAUD", "921600"))
 
 # --- Audio Format ---
@@ -50,8 +96,8 @@ CHANNELS = 1
 
 # --- Wake Word Detection (openWakeWord) ---
 DEFAULT_WAKE_MODEL = os.getenv("DESKBOT_WAKE_MODEL", "hey_jarvis")
-DEFAULT_WAKE_THRESHOLD = float(os.getenv("DESKBOT_WAKE_THRESHOLD", "0.50"))
-DEFAULT_MIC_GAIN = float(os.getenv("DESKBOT_MIC_GAIN", "1.2"))
+DEFAULT_WAKE_THRESHOLD = float(os.getenv("DESKBOT_WAKE_THRESHOLD", "0.45"))
+DEFAULT_MIC_GAIN = float(os.getenv("DESKBOT_MIC_GAIN", "1.5"))
 
 # --- Speech-to-Text (Faster-Whisper) ---
 DEFAULT_STT_MODEL = os.getenv("DESKBOT_STT_MODEL", "base")

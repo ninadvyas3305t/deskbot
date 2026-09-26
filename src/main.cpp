@@ -487,7 +487,7 @@ void recordAudio()
         if (currentTouch && !lastTouchState && (millis() - lastTouchTime > 400))
         {
             lastTouchTime = millis();
-            Serial.print("\nTOUCH_TRIGGER\n");
+            Serial.print("\nTOUCH_TRIGGER_\n");
             Serial.flush();
         }
         lastTouchState = currentTouch;

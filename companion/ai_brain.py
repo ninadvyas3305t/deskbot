@@ -46,6 +46,18 @@ VALID_ACTIONS = {
     "system_info",
     "weather",
     "clarification",
+    "enter_developer_mode",
+    "exit_developer_mode",
+    "get_active_window",
+    "get_current_file",
+    "get_current_workspace",
+    "list_workspace_files",
+    "search_workspace",
+    "read_active_file",
+    "analyze_code",
+    "run_tests",
+    "apply_patch",
+    "rollback_patch",
     "unknown",
 }
 
@@ -296,8 +308,9 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
     # 4. Fallback heuristics based on user_command and raw_text
     lower_raw = raw_str.lower()
     lower_cmd = user_cmd.lower().strip()
-    cleaned_speech = re.sub(r"^(?:hey\s+jarvis\s*,?\s*)?(?:no\s*,?\s*|nope\s*,?\s*)?(?:please\s+)?(?:can\s+you\s+)?", "", lower_cmd).strip()
-    orig_speech = re.sub(r"^(?:hey\s+jarvis\s*,?\s*)?(?:no\s*,?\s*|nope\s*,?\s*)?(?:please\s+)?(?:can\s+you\s+)?", "", user_cmd, flags=re.IGNORECASE).strip()
+    prefix_pat = r"^(?:hey\s+jarvis\s*,?\s*)?(?:no\s*,?\s*|nope\s*,?\s*)?(?:please\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+|will\s+you\s+|you\s+|just\s+|now\s+|and\s+)?"
+    cleaned_speech = re.sub(prefix_pat, "", lower_cmd).strip()
+    orig_speech = re.sub(prefix_pat, "", user_cmd, flags=re.IGNORECASE).strip()
 
     # Strip trailing punctuation produced by STT
     cleaned_speech = cleaned_speech.rstrip(".,?!;:`'\"").strip()
@@ -437,6 +450,14 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
            cleaned_speech in {"screenshot", "take screenshot", "take a screenshot", "capture screen", "screen capture"}:
             return {"action": "screenshot"}
 
+    # Rule DEV-MODE: Enter/exit developer mode
+    if re.search(r"\b(?:enter|activate|turn\s+on|start|switch\s+to)\s+developer\s+mode\b", cleaned_speech) or \
+       cleaned_speech in {"developer mode", "help me with my code", "help with my code", "help with code"}:
+        return {"action": "enter_developer_mode"}
+    if re.search(r"\b(?:exit|leave|deactivate|turn\s+off|stop|disable)\s+developer\s+mode\b", cleaned_speech) or \
+       cleaned_speech in {"exit developer mode", "leave developer mode", "normal mode"}:
+        return {"action": "exit_developer_mode"}
+
     # Rule 0E: Close app
     close_match = re.search(r"^(?:close|quit|exit|kill|terminate)(?:\s+(?:the|app|application))?\s+([a-zA-Z0-9_\- ]+)", cleaned_speech)
     if close_match:
@@ -458,6 +479,88 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
         city = weather_match.group(1)
         return {"action": "weather", "query": city.strip().title() if city else None}
 
+    # Rule DEV-WINDOW: Active window / Screen understanding
+    if re.search(r"\b(?:what\s+(?:am\s+i|are\s+we)\s+looking\s+at|look\s+at\s+my\s+screen|inspect\s+(?:my\s+)?screen|what\s+window\s+is\s+(?:active|open)|what\s+app\s+is\s+(?:active|open))\b", cleaned_speech):
+        return {"action": "get_active_window"}
+
+    # Rule DEV-FILE: Current file detection
+    if re.search(r"\b(?:what\s+file\s+am\s+i\s+working\s+on|what\s+file\s+is\s+open|which\s+file\s+is\s+open|what\s+is\s+the\s+active\s+file|current\s+file)\b", cleaned_speech):
+        return {"action": "get_current_file"}
+
+    # Rule DEV-WORKSPACE: Workspace info & file search
+    if re.search(r"\b(?:what\s+workspace|what\s+project\s+am\s+i\s+in|current\s+workspace|current\s+project)\b", cleaned_speech):
+        return {"action": "get_current_workspace"}
+
+    dev_search_match = re.search(r"\b(?:search\s+workspace(?:\s+for)?|search\s+project(?:\s+for)?|search\s+code(?:\s+for)?|find\s+in\s+workspace)\s+(.+)", cleaned_speech)
+    if dev_search_match:
+        q_dev = dev_search_match.group(1).strip()
+        if q_dev:
+            return {"action": "search_workspace", "query": q_dev}
+
+    where_match = re.search(r"\bwhere\s+is\s+(?:the\s+)?([a-zA-Z0-9_\-]+)\s+(?:handled|defined|located|implemented)\b", cleaned_speech)
+    if where_match:
+        return {"action": "search_workspace", "query": where_match.group(1)}
+
+    # Rule DEV-TESTS: Run unit tests
+    if re.search(r"\b(?:run\s+(?:the\s+)?(?:unit\s+)?tests?|run\s+test\s+suite|test\s+(?:the\s+)?project)\b", cleaned_speech):
+        return {"action": "run_tests"}
+
+    # Rule DEV-READ: Read/explain active file
+    if re.search(r"\b(?:read|explain|show)\s+(?:the\s+)?(?:current|active)\s+file\b", cleaned_speech):
+        return {"action": "read_active_file", "query": ""}
+    if re.search(r"\banalyze\s+(?:the\s+)?(?:current|active)\s+code\b", cleaned_speech):
+        return {"action": "analyze_code", "query": ""}
+
+    # Rule YOUTUBE-SEARCH: Search YouTube or open something on YouTube
+    # 1. "open youtube and search for X" or "search youtube for X"
+    m_yt1 = re.search(r"\b(?:open\s+(?:youtube|yt)\s+(?:and\s+)?search(?:\s+for)?|search\s+(?:on\s+)?(?:youtube|yt)\s+(?:for)?)\s+(.+)", orig_speech, flags=re.IGNORECASE)
+    if m_yt1:
+        q_yt = m_yt1.group(1).strip(".?!,;\"' ")
+        return {"action": "youtube_search", "query": q_yt}
+
+    # 2. "search for X on/in youtube" or "search X on/in youtube"
+    m_yt2 = re.search(r"\bsearch\s+(?:for\s+)?(.+?)\s+(?:on|in)\s+(?:youtube|yt)\b", orig_speech, flags=re.IGNORECASE)
+    if m_yt2:
+        q_yt = m_yt2.group(1).strip(".?!,;\"' ")
+        return {"action": "youtube_search", "query": q_yt}
+
+    # 3. "open X on/in youtube" (e.g. "open the channel on YouTube", "open Mr Beast on YouTube", "open MKBHD on YouTube")
+    m_yt3 = re.search(r"\bopen\s+(.+?)\s+(?:on|in)\s+(?:youtube|yt)\b", orig_speech, flags=re.IGNORECASE)
+    if m_yt3:
+        target_yt = m_yt3.group(1).strip(".?!,;\"' ")
+        if target_yt.lower() in {"the channel", "channel", "his channel", "her channel", "their channel", "that channel"}:
+            for turn in reversed(_CONVERSATION_TURNS):
+                q_prev = turn.get("query")
+                if q_prev and q_prev.lower() not in {"the channel", "channel", "local", "here"}:
+                    target_yt = f"{q_prev} channel"
+                    break
+        return {"action": "youtube_search", "query": target_yt}
+
+    # Rule PLAY: Play song/music on YouTube or Spotify (evaluated before generic open_app!)
+    play_match = re.search(r"\b(?:open\s+(?:youtube|yt)\s+(?:and\s+)?play|open\s+spotify\s+(?:and\s+)?play|play)\s+(.+)", orig_speech, flags=re.IGNORECASE)
+    if play_match:
+        target_song = play_match.group(1).strip()
+        target_song = re.sub(r"^(?:the\s+)?(?:song|video|track)\s+", "", target_song, flags=re.IGNORECASE).strip()
+        target_song = target_song.strip(".?!,;\"' ")
+
+        # Check platform preference
+        if re.search(r"\s+(?:on|in|using)\s+spotify$", target_song, flags=re.IGNORECASE) or "spotify" in cleaned_speech:
+            song_name = re.sub(r"\s+(?:on|in|using)\s+spotify$", "", target_song, flags=re.IGNORECASE).strip(".?!,;\"' ")
+            if song_name.lower() in {"it", "that", "that song", ""}:
+                for turn in reversed(_CONVERSATION_TURNS):
+                    if turn.get("role") == "assistant":
+                        try:
+                            prev = json.loads(turn.get("content", "{}"))
+                            if prev.get("query"):
+                                song_name = prev["query"]
+                                break
+                        except Exception:
+                            pass
+            return {"action": "spotify_play", "query": song_name if song_name else None}
+        else:
+            song_name = re.sub(r"\s+(?:on|in|using)\s+(?:youtube|yt)$", "", target_song, flags=re.IGNORECASE).strip(".?!,;\"' ")
+            return {"action": "youtube_play", "query": song_name if song_name else None}
+
     # Rule 0G: Web search
     search_match = re.search(r"\b(?:search\s+(?:the\s+web|google)\s+for|search\s+for|google\s+)(.+)", cleaned_speech)
     if search_match:
@@ -476,31 +579,6 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
             return {"action": "open_website", "query": target}
         if target:
             return {"action": "open_app", "query": target.title()}
-
-    # Rule B: Specific play commands
-    if "spotify_play" in lower_raw or ("play" in lower_cmd and "spotify" in lower_cmd):
-        q = re.sub(r"^(?:hey\s+jarvis\s*,?\s*)?(?:just\s+)?play\s+(?:the\s+song\s+)?", "", user_command, flags=re.IGNORECASE).strip()
-        q = re.sub(r"\s+(?:on|in|using)\s+spotify$", "", q, flags=re.IGNORECASE).strip()
-        if q.lower() in {"it", "that", "that song", ""}:
-            # Resolve from context if available
-            for turn in reversed(_CONVERSATION_TURNS):
-                if turn.get("role") == "assistant":
-                    try:
-                        prev = json.loads(turn.get("content", "{}"))
-                        if prev.get("query"):
-                            q = prev["query"]
-                            break
-                    except Exception:
-                        pass
-        return {"action": "spotify_play", "query": q if q else None}
-
-    if "youtube_play" in lower_raw or "play" in lower_cmd:
-        q = re.sub(r"^(?:hey\s+jarvis\s*,?\s*)?(?:just\s+)?play\s+(?:the\s+song\s+)?", "", user_command, flags=re.IGNORECASE).strip()
-        q = re.sub(r"\s+(?:on|in|using)\s+youtube$", "", q, flags=re.IGNORECASE).strip()
-        return {"action": "youtube_play", "query": q if q else None}
-
-    if "spotify_open" in lower_raw or "spotify" in lower_cmd:
-        return {"action": "spotify_open"}
 
     return None
 
@@ -628,6 +706,7 @@ Guidelines:
    For example: "I couldn't find a reliable source confirming a major event happening right now."
    DO NOT fabricate facts or hallucinate details not grounded in the search results.
 5. Keep the language clear, conversational, and direct for audio delivery.
+6. Never say you cannot open YouTube or control the computer; DeskBot has native computer tools to open and control YouTube.
 """
 
 

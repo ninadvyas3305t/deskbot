@@ -19,3 +19,6 @@ companion/.env
 # Per-user recordings and locally trained/downloaded wake-word models.
 companion/last_command.wav
 companion/models/
+.venv/
+.DS_Store
+*.pytest_cache/

@@ -383,13 +383,14 @@ def run_assistant(
                 "no that is all", "no thank you", "no thanks", "good", "all set",
                 "that'll be all", "that will be all", "yeah that is all", "yeah that's all",
                 "yes that is all", "yes that's all", "you are that is all",
+                "is all", "it's all", "its all", "all",
             }
 
             AFFIRMATIVE_SUBSTRINGS = {
                 "that's all", "thats all", "that is all", "that will be all",
                 "that'll be all", "that would be all", "that is it", "that's it",
                 "thats it", "all done", "nothing else", "no more", "im good",
-                "i'm good", "all set", "all good",
+                "i'm good", "all set", "all good", "is all", "it's all", "its all",
             }
 
             NEGATIVE_STANDALONE = {
@@ -401,7 +402,7 @@ def run_assistant(
                 fu_lower in AFFIRMATIVE_RESPONSES
                 or any(phrase in fu_lower for phrase in AFFIRMATIVE_SUBSTRINGS)
                 or (fu_words and all(w in {"yes", "yeah", "yup", "yep", "sure", "ok", "okay", "done", "fine", "good", "alright"} for w in fu_words))
-                or (re.search(r"\b(?:that(?:'s|\s+is|\s+will\s+be|\s+would\s+be)?\s+all)\b", fu_lower) is not None)
+                or (re.search(r"\b(?:(?:that|it)(?:'s|\s+is|\s+will\s+be|\s+would\s+be)?\s+all|is\s+all)\b", fu_lower) is not None)
                 or (re.search(r"\b(?:that(?:'s|\s+is)?\s+it)\b", fu_lower) is not None)
             )
 
@@ -517,16 +518,27 @@ def run_assistant(
                 score = prediction.get(label, 0.0)
                 max_amp = int(np.max(np.abs(audio_array)))
 
-                # Require audible voice energy (max amplitude >= 350) and sustained detection
-                # across at least 2 consecutive chunks (160ms) at or above wake_threshold.
-                # This guarantees that transient acoustic reflections or single-chunk noise spikes never trigger wake.
-                if score >= wake_threshold and max_amp >= 350:
-                    consecutive_wake_hits += 1
-                    if consecutive_wake_hits >= 2:
+                if score >= 0.15 and debug:
+                    logger.debug("Wake candidate score: %.2f (amp: %d, thresh: %.2f)", score, max_amp, wake_threshold)
+
+                # Responsive & reliable wake trigger:
+                # 1. Trigger immediately on strong confidence (score >= wake_threshold) with audible voice energy (amp >= 200).
+                # 2. Or trigger on sustained near-threshold confidence (score >= wake_threshold * 0.80) across 2 chunks.
+                if max_amp >= 200:
+                    if score >= wake_threshold:
                         detected = True
                         detected_score = score
                         consecutive_wake_hits = 0
                         break
+                    elif score >= (wake_threshold * 0.80):
+                        consecutive_wake_hits += 1
+                        if consecutive_wake_hits >= 2:
+                            detected = True
+                            detected_score = score
+                            consecutive_wake_hits = 0
+                            break
+                    else:
+                        consecutive_wake_hits = 0
                 else:
                     consecutive_wake_hits = 0
 

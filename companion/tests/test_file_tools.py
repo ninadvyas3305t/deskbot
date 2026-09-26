@@ -88,7 +88,8 @@ class TestFileTools(unittest.TestCase):
     def test_open_file_explorer(self, mock_popen):
         res = file_tools.open_file_explorer()
         self.assertTrue(res.success)
-        mock_popen.assert_called_with(["explorer.exe"], shell=False)
+        expected_cmd = ["open", "."] if sys.platform == "darwin" else ["explorer.exe"]
+        mock_popen.assert_called_with(expected_cmd, shell=False)
 
     @patch("subprocess.Popen")
     def test_open_in_vscode(self, mock_popen):
@@ -250,19 +251,19 @@ class TestFileHeuristicsAndDestructiveGuards(unittest.TestCase):
                 self.assertFalse(test_file.exists())
                 self.assertIn("Deleted notes.txt", del_res.response_text)
 
-    @patch("os.startfile")
-    def test_fuzzy_filename_resolution_open_file(self, mock_startfile):
+    def test_fuzzy_filename_resolution_open_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             test_file = tmp_path / "notes.txt"
             test_file.write_text("Test", encoding="utf-8")
 
             with patch.dict(file_tools.STANDARD_DIRECTORIES, {"desktop": tmp_path}):
-                # User says "open nodes.txt"
-                res = file_tools.open_file("nodes.txt")
-                self.assertTrue(res.success)
-                self.assertIn("Opening notes.txt", res.response_text)
-                mock_startfile.assert_called_with(str(test_file))
+                with patch.object(file_tools, "launch_path") as mock_launch:
+                    # User says "open nodes.txt"
+                    res = file_tools.open_file("nodes.txt")
+                    self.assertTrue(res.success)
+                    self.assertIn("Opening notes.txt", res.response_text)
+                    mock_launch.assert_called_with(test_file)
 
     @patch("subprocess.Popen")
     def test_fuzzy_filename_resolution_open_in_vscode(self, mock_popen):

@@ -138,9 +138,29 @@ class AudioEngine:
 
                 # Intercept hardware TTP223 touch sensor marker from ESP32
                 if b"TOUCH_TRIGGER" in raw_bytes:
-                    raw_bytes = raw_bytes.replace(b"\nTOUCH_TRIGGER\n", b"").replace(b"TOUCH_TRIGGER\n", b"").replace(b"TOUCH_TRIGGER", b"")
                     with self._touch_lock:
                         self._touch_detected = True
+
+                    while b"TOUCH_TRIGGER" in raw_bytes:
+                        pos = raw_bytes.find(b"TOUCH_TRIGGER")
+                        start = pos
+                        while start > 0 and raw_bytes[start - 1 : start] in (b"\n", b"\r"):
+                            start -= 1
+                        end = pos + len(b"TOUCH_TRIGGER")
+                        while end < len(raw_bytes) and raw_bytes[end : end + 1] in (b"\n", b"\r", b"_"):
+                            end += 1
+
+                        before = raw_bytes[:start]
+                        after = raw_bytes[end:]
+
+                        # Align 'before' to 16-bit boundary (drop odd trailing byte)
+                        if len(before) % 2 != 0:
+                            before = before[:-1]
+                        # Align 'after' so 16-bit PCM word phase is strictly maintained
+                        if len(after) % 2 != 0:
+                            after = after[1:]
+
+                        raw_bytes = before + after
 
                 if not raw_bytes:
                     continue

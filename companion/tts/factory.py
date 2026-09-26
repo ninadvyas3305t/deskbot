@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
+import sys
+
 from .base import BaseTTSEngine
+from .macos_say import MacOSSayTTSEngine
 from .windows_sapi import WindowsSAPITTSEngine
 
 logger = logging.getLogger(__name__)
@@ -50,7 +53,7 @@ class MockTTSEngine(BaseTTSEngine):
 _GLOBAL_TTS_ENGINE: Optional[BaseTTSEngine] = None
 
 
-def get_tts_engine(engine_type: str = "sapi5", voice: Optional[str] = None, rate: int = 1, volume: int = 100) -> BaseTTSEngine:
+def get_tts_engine(engine_type: Optional[str] = None, voice: Optional[str] = None, rate: int = 1, volume: int = 100) -> BaseTTSEngine:
     """Retrieve or initialize the singleton TTS engine."""
     global _GLOBAL_TTS_ENGINE
 
@@ -61,10 +64,22 @@ def get_tts_engine(engine_type: str = "sapi5", voice: Optional[str] = None, rate
         _GLOBAL_TTS_ENGINE = MockTTSEngine()
         return _GLOBAL_TTS_ENGINE
 
+    if engine_type == "say" or (engine_type is None and sys.platform == "darwin"):
+        try:
+            _GLOBAL_TTS_ENGINE = MacOSSayTTSEngine(voice_name_or_index=voice, rate=rate, volume=volume)
+            return _GLOBAL_TTS_ENGINE
+        except Exception as err:
+            logger.warning("Could not initialize macOS Say TTS engine: %s", err)
+
     try:
-        _GLOBAL_TTS_ENGINE = WindowsSAPITTSEngine(voice_name_or_index=voice, rate=rate, volume=volume)
+        if sys.platform == "win32" or engine_type == "sapi5":
+            _GLOBAL_TTS_ENGINE = WindowsSAPITTSEngine(voice_name_or_index=voice, rate=rate, volume=volume)
+        elif sys.platform == "darwin":
+            _GLOBAL_TTS_ENGINE = MacOSSayTTSEngine(voice_name_or_index=voice, rate=rate, volume=volume)
+        else:
+            _GLOBAL_TTS_ENGINE = MockTTSEngine()
     except Exception as err:
-        logger.warning("Could not initialize SAPI TTS engine, falling back to MockTTSEngine: %s", err)
+        logger.warning("Could not initialize native TTS engine, falling back to MockTTSEngine: %s", err)
         _GLOBAL_TTS_ENGINE = MockTTSEngine()
 
     return _GLOBAL_TTS_ENGINE

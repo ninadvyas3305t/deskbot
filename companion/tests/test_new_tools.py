@@ -45,12 +45,19 @@ class TestNewTools(unittest.TestCase):
         for act in new_actions:
             self.assertTrue(command_executor.REGISTRY.has_action(act), f"Missing action: {act}")
 
-    @patch("ctypes.windll.user32.keybd_event")
-    def test_volume_actions(self, mock_keybd):
-        for act in ["volume_up", "volume_down", "mute", "unmute"]:
-            res = command_executor.execute_intent({"action": act})
-            self.assertTrue(res.success)
-            self.assertTrue(bool(res))
+    def test_volume_actions(self):
+        if sys.platform == "darwin":
+            with patch("subprocess.run") as mock_run:
+                for act in ["volume_up", "volume_down", "mute", "unmute"]:
+                    res = command_executor.execute_intent({"action": act})
+                    self.assertTrue(res.success)
+                    self.assertTrue(bool(res))
+        else:
+            with patch("ctypes.windll.user32.keybd_event") as mock_keybd:
+                for act in ["volume_up", "volume_down", "mute", "unmute"]:
+                    res = command_executor.execute_intent({"action": act})
+                    self.assertTrue(res.success)
+                    self.assertTrue(bool(res))
 
     @patch("PIL.ImageGrab.grab")
     def test_screenshot_action(self, mock_grab):

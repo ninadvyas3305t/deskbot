@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import config
 import json
 import logging
 import os
@@ -113,7 +114,7 @@ def search_youtube(query: str) -> bool:
     return True
 
 
-def find_first_youtube_video(query: str, timeout: float = 3.5) -> str | None:
+def find_first_youtube_video(query: str, timeout: float = 4.0) -> str | None:
     """Extract the video ID of the first video result for a YouTube query."""
     clean_query = query.strip()
     if not clean_query:
@@ -122,18 +123,35 @@ def find_first_youtube_video(query: str, timeout: float = 3.5) -> str | None:
     search_url = f"https://www.youtube.com/results?search_query={quote_plus(clean_query)}"
     req = urllib.request.Request(
         search_url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
     )
 
+    # Robust cross-platform SSL context (handles macOS missing certs & Windows)
+    ctx = None
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        import ssl
+        try:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+    except Exception:
+        ctx = None
+
+    try:
+        kwargs: Dict[str, Any] = {"timeout": timeout}
+        if ctx is not None:
+            kwargs["context"] = ctx
+        with urllib.request.urlopen(req, **kwargs) as response:
             buffer = ""
             while True:
                 chunk = response.read(32768)
                 if not chunk:
                     break
                 buffer += chunk.decode("utf-8", errors="ignore")
-                matches = re.findall(r"watch\?v=([a-zA-Z0-9_-]{11})", buffer)
+                matches = re.findall(r"(?:watch\?v=|\"videoId\":\")([a-zA-Z0-9_-]{11})", buffer)
                 if matches:
                     return matches[0]
                 if len(buffer) > 65536:
@@ -165,10 +183,13 @@ def play_youtube(query: str | None) -> bool:
 
 def open_spotify() -> bool:
     """Open Spotify desktop client."""
-    subprocess.Popen(
-        ["cmd", "/c", "start", "", "spotify:"],
-        shell=False,
-    )
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "spotify:"], shell=False)
+    else:
+        subprocess.Popen(
+            ["cmd", "/c", "start", "", "spotify:"],
+            shell=False,
+        )
     return True
 
 
@@ -205,8 +226,16 @@ def _send_key(vk_code: int) -> None:
 
 
 def _trigger_spotify_play() -> None:
-    """Helper thread to send Tab + Enter to play after Spotify loads search results."""
+    """Helper thread to play after Spotify loads search results."""
     try:
+        if sys.platform == "darwin":
+            time.sleep(1.8)
+            try:
+                subprocess.run(["osascript", "-e", 'tell application "Spotify" to play'], capture_output=True)
+            except Exception:
+                pass
+            return
+
         # Give Spotify sufficient time to launch/focus and render network search results
         time.sleep(2.2)
 
@@ -248,10 +277,13 @@ def play_spotify(query: str | None) -> bool:
 
     encoded = quote_plus(clean_query)
     try:
-        subprocess.Popen(
-            ["cmd", "/c", "start", "", f"spotify:search:{encoded}"],
-            shell=False,
-        )
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", f"spotify:search:{encoded}"], shell=False)
+        else:
+            subprocess.Popen(
+                ["cmd", "/c", "start", "", f"spotify:search:{encoded}"],
+                shell=False,
+            )
         # Launch background thread to press play on the top result
         threading.Thread(target=_trigger_spotify_play, daemon=True).start()
         return True
@@ -372,6 +404,146 @@ COMMON_APP_MAP: Dict[str, str] = {
     "7-zip": "7zFM.exe",
     "7zip": "7zFM.exe",
 }
+
+MACOS_APP_MAP: Dict[str, str] = {
+    # System Utilities & Accessories
+    "calculator": "Calculator",
+    "calc": "Calculator",
+    "notes": "Notes",
+    "apple notes": "Notes",
+    "notepad": "TextEdit",
+    "textedit": "TextEdit",
+    "terminal": "Terminal",
+    "mac terminal": "Terminal",
+    "activity monitor": "Activity Monitor",
+    "task manager": "Activity Monitor",
+    "taskmgr": "Activity Monitor",
+    "task monitor": "Activity Monitor",
+    "finder": "Finder",
+    "files": "Finder",
+    "file explorer": "Finder",
+    "settings": "System Settings",
+    "windows settings": "System Settings",
+    "system settings": "System Settings",
+    "system preferences": "System Settings",
+    "preferences": "System Settings",
+    "calendar": "Calendar",
+    "reminders": "Reminders",
+    "contacts": "Contacts",
+    "mail": "Mail",
+    "email": "Mail",
+    "messages": "Messages",
+    "imessage": "Messages",
+    "facetime": "FaceTime",
+    "maps": "Maps",
+    "apple maps": "Maps",
+    "photos": "Photos",
+    "photo viewer": "Photos",
+    "music": "Music",
+    "apple music": "Music",
+    "podcasts": "Podcasts",
+    "tv": "TV",
+    "apple tv": "TV",
+    "books": "Books",
+    "app store": "App Store",
+    "store": "App Store",
+    "keynote": "Keynote",
+    "numbers": "Numbers",
+    "pages": "Pages",
+    "preview": "Preview",
+    "pdf viewer": "Preview",
+    "font book": "Font Book",
+    "disk utility": "Disk Utility",
+    "console": "Console",
+    "clock": "Clock",
+    "alarm": "Clock",
+    "alarms": "Clock",
+    "timer": "Clock",
+    "stopwatch": "Clock",
+    "weather": "Weather",
+    "shortcuts": "Shortcuts",
+    "camera": "Photo Booth",
+    "photo booth": "Photo Booth",
+
+    # Web Browsers
+    "safari": "Safari",
+    "google chrome": "Google Chrome",
+    "chrome": "Google Chrome",
+    "chrome browser": "Google Chrome",
+    "firefox": "Firefox",
+    "mozilla firefox": "Firefox",
+    "brave": "Brave Browser",
+    "brave browser": "Brave Browser",
+    "edge": "Microsoft Edge",
+    "microsoft edge": "Microsoft Edge",
+    "ms edge": "Microsoft Edge",
+    "arc": "Arc",
+    "opera": "Opera",
+
+    # Development & Productivity
+    "visual studio code": "Visual Studio Code",
+    "vs code": "Visual Studio Code",
+    "vscode": "Visual Studio Code",
+    "code": "Visual Studio Code",
+    "xcode": "Xcode",
+    "iterm": "iTerm",
+    "iterm2": "iTerm",
+    "warp": "Warp",
+    "sublime": "Sublime Text",
+    "sublime text": "Sublime Text",
+
+    # Media & Communication
+    "spotify": "Spotify",
+    "vlc": "VLC",
+    "vlc media player": "VLC",
+    "slack": "Slack",
+    "discord": "Discord",
+    "zoom": "zoom.us",
+    "teams": "Microsoft Teams",
+    "microsoft teams": "Microsoft Teams",
+    "telegram": "Telegram",
+    "whatsapp": "WhatsApp",
+    "notion": "Notion",
+    "obs": "OBS",
+    "obs studio": "OBS",
+    "steam": "Steam",
+    "chatgpt": "ChatGPT",
+    "claude": "Claude",
+    "github desktop": "GitHub Desktop",
+}
+
+_MACOS_APP_CACHE: Dict[str, str] | None = None
+_MACOS_APP_CACHE_TIME: float = 0.0
+
+
+def get_installed_macos_apps(refresh: bool = False) -> Dict[str, str]:
+    """Scan macOS /Applications, /System/Applications, and ~/Applications for installed .app bundles."""
+    global _MACOS_APP_CACHE, _MACOS_APP_CACHE_TIME
+    now = time.time()
+    if not refresh and _MACOS_APP_CACHE is not None and (now - _MACOS_APP_CACHE_TIME) < 60.0:
+        return _MACOS_APP_CACHE
+
+    dirs = [
+        Path("/Applications"),
+        Path("/System/Applications"),
+        Path("/System/Applications/Utilities"),
+        Path.home() / "Applications",
+    ]
+    apps: Dict[str, str] = {}
+    for d in dirs:
+        if d.is_dir():
+            try:
+                for entry in d.iterdir():
+                    if entry.suffix == ".app":
+                        name = entry.stem
+                        apps[name.lower()] = name
+            except Exception:
+                pass
+
+    _MACOS_APP_CACHE = apps
+    _MACOS_APP_CACHE_TIME = now
+    return apps
+
 
 _SHORTCUT_CACHE: list[tuple[str, str]] | None = None
 _SHORTCUT_CACHE_TIME: float = 0.0
@@ -508,6 +680,33 @@ def find_installed_app(app_name: str) -> str | None:
     clean = re.sub(r"\s+app(?:lication)?$", "", clean, flags=re.IGNORECASE).strip()
     clean_lower = clean.lower()
 
+    # --- macOS Resolution ---
+    if sys.platform == "darwin":
+        # 1. Check known macOS alias map
+        if clean_lower in MACOS_APP_MAP:
+            return MACOS_APP_MAP[clean_lower]
+
+        # 2. Check installed .app bundles across /Applications, /System/Applications, etc.
+        apps = get_installed_macos_apps()
+        if clean_lower in apps:
+            return apps[clean_lower]
+
+        # 3. Substring matching in installed applications
+        for k, v in apps.items():
+            if clean_lower in k or k in clean_lower:
+                return v
+
+        # 4. Check PATH via which
+        try:
+            which_res = subprocess.run(["which", clean_lower], capture_output=True, text=True)
+            if which_res.returncode == 0 and which_res.stdout.strip():
+                return which_res.stdout.strip()
+        except OSError:
+            pass
+
+        return clean.title()
+
+    # --- Windows Resolution ---
     # 1. Check known system/protocol alias map
     if clean_lower in COMMON_APP_MAP:
         return COMMON_APP_MAP[clean_lower]
@@ -551,6 +750,18 @@ def find_installed_app(app_name: str) -> str | None:
 
 def _launch_target(target: str) -> bool:
     """Launch a target (file, shortcut, URI, or command) non-blockingly."""
+    # 0. macOS native launcher
+    if sys.platform == "darwin":
+        try:
+            proc = subprocess.run(["open", "-a", target], capture_output=True, text=True)
+            if proc.returncode == 0:
+                return True
+            proc2 = subprocess.run(["open", target], capture_output=True, text=True)
+            return proc2.returncode == 0
+        except Exception as err:
+            logger.debug("macOS open failed for %r: %s", target, err)
+            return False
+
     # 1. Native Windows ShellExecute
     if hasattr(os, "startfile"):
         try:
@@ -585,7 +796,7 @@ def _launch_target(target: str) -> bool:
 
 
 def launch_windows_app(app_name: str) -> bool:
-    """Launch any Windows application installed on the system."""
+    """Launch any application installed on the system (Windows or macOS)."""
     clean_name = (app_name or "").strip()
     if not clean_name:
         print("No application name was provided.")
@@ -604,11 +815,14 @@ def launch_windows_app(app_name: str) -> bool:
     return False
 
 
+launch_app = launch_windows_app
+
+
 # --- Registration ---
 
-@REGISTRY.register("open_app", description_fn=lambda q: f"Launching Windows app: {q}")
+@REGISTRY.register("open_app", description_fn=lambda q: f"Launching app: {q}")
 def _handle_open_app(query: Any) -> bool:
-    return launch_windows_app(str(query or ""))
+    return launch_app(str(query or ""))
 
 
 @REGISTRY.register("open_website", description_fn=lambda q: f"Opening website: {q}")
@@ -654,8 +868,29 @@ VK_VOLUME_DOWN = 0xAE
 VK_VOLUME_UP = 0xAF
 
 
-def _adjust_volume(increase: bool, amount: int = 10) -> ToolResult:
-    """Safely adjust Windows master volume using virtual key events."""
+def _adjust_volume_darwin(increase: bool, amount: int = 10) -> ToolResult:
+    try:
+        delta = amount if increase else -amount
+        script = f"set volume output volume ((output volume of (get volume settings)) + {delta})"
+        subprocess.run(["osascript", "-e", script], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        direction = "increased" if increase else "decreased"
+        return ToolResult(True, f"Volume {direction} by {amount}%", f"Volume {direction}.")
+    except Exception as err:
+        return ToolResult(False, f"Volume error: {err}", "Failed to adjust volume.")
+
+
+def _toggle_mute_darwin(mute: bool = True) -> ToolResult:
+    try:
+        val = "true" if mute else "false"
+        script = f"set volume output muted {val}"
+        subprocess.run(["osascript", "-e", script], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        action_word = "muted" if mute else "unmuted"
+        return ToolResult(True, f"Master volume {action_word}", f"Audio {action_word}.")
+    except Exception as err:
+        return ToolResult(False, f"Mute toggle error: {err}", "Failed to toggle audio mute.")
+
+
+def _adjust_volume_windows(increase: bool, amount: int = 10) -> ToolResult:
     steps = max(1, min(25, amount // 2))
     vk = VK_VOLUME_UP if increase else VK_VOLUME_DOWN
     try:
@@ -670,8 +905,7 @@ def _adjust_volume(increase: bool, amount: int = 10) -> ToolResult:
         return ToolResult(False, f"Volume error: {err}", "Failed to adjust volume.")
 
 
-def _toggle_mute(mute: bool = True) -> ToolResult:
-    """Safely toggle master volume mute state."""
+def _toggle_mute_windows(mute: bool = True) -> ToolResult:
     try:
         import ctypes
         ctypes.windll.user32.keybd_event(VK_VOLUME_MUTE, 0, 0, 0)
@@ -680,6 +914,28 @@ def _toggle_mute(mute: bool = True) -> ToolResult:
         return ToolResult(True, f"Master volume {action_word}", f"Audio {action_word}.")
     except Exception as err:
         return ToolResult(False, f"Mute toggle error: {err}", "Failed to toggle audio mute.")
+
+
+def _adjust_volume(increase: bool, amount: int = 10) -> ToolResult:
+    """Safely adjust master volume using native OS facilities."""
+    if sys.platform == "darwin":
+        return _adjust_volume_darwin(increase=increase, amount=amount)
+    elif sys.platform == "win32":
+        return _adjust_volume_windows(increase=increase, amount=amount)
+    else:
+        direction = "increased" if increase else "decreased"
+        return ToolResult(True, f"Volume {direction} by {amount}%", f"Volume {direction}.")
+
+
+def _toggle_mute(mute: bool = True) -> ToolResult:
+    """Safely toggle master volume mute state."""
+    if sys.platform == "darwin":
+        return _toggle_mute_darwin(mute=mute)
+    elif sys.platform == "win32":
+        return _toggle_mute_windows(mute=mute)
+    else:
+        action_word = "muted" if mute else "unmuted"
+        return ToolResult(True, f"Master volume {action_word}", f"Audio {action_word}.")
 
 
 @REGISTRY.register("volume_up", description_fn=lambda q: f"Increasing volume: {q or '10%'}")
@@ -738,6 +994,9 @@ PROHIBITED_PROCESSES = {
     "explorer.exe", "winlogon.exe", "csrss.exe", "smss.exe", "svchost.exe",
     "services.exe", "lsass.exe", "dwm.exe", "system", "idle"
 }
+MACOS_PROHIBITED_APPS = {
+    "finder", "dock", "systemuiserver", "windowserver", "loginwindow", "launchd", "kernel_task"
+}
 
 
 @REGISTRY.register("close_app", description_fn=lambda q: f"Closing application: {q}")
@@ -746,12 +1005,33 @@ def _handle_close_app(query: Any) -> ToolResult:
     if not clean_name:
         return ToolResult(False, "Missing app name", "Please specify which application to close.")
 
+    # Guard critical system processes on both platforms
+    clean_base = clean_name[:-4] if clean_name.endswith(".exe") else clean_name
+    clean_exe = f"{clean_base}.exe"
+    if (
+        clean_name in PROHIBITED_PROCESSES
+        or clean_exe in PROHIBITED_PROCESSES
+        or clean_base in MACOS_PROHIBITED_APPS
+        or clean_name in MACOS_PROHIBITED_APPS
+    ):
+        return ToolResult(False, f"Closing {clean_name} is prohibited for system safety.", "Cannot close protected system process.")
+
+    if sys.platform == "darwin":
+        app_title = MACOS_APP_MAP.get(clean_name, clean_name.title())
+        try:
+            res = subprocess.run(["osascript", "-e", f'tell application "{app_title}" to quit'], capture_output=True, text=True)
+            if res.returncode == 0:
+                return ToolResult(True, f"Closed {app_title}", f"Closed {clean_name.title()}.")
+            res_pkill = subprocess.run(["pkill", "-f", clean_name], capture_output=True, text=True)
+            if res_pkill.returncode == 0:
+                return ToolResult(True, f"Closed {app_title}", f"Closed {clean_name.title()}.")
+            return ToolResult(False, f"{app_title} was not running", f"{clean_name.title()} is not currently open.")
+        except Exception as err:
+            return ToolResult(False, str(err), f"Error closing {clean_name.title()}: {err}")
+
     exe_target = COMMON_APP_MAP.get(clean_name, clean_name)
     if not exe_target.lower().endswith(".exe"):
         exe_target += ".exe"
-
-    if exe_target.lower() in PROHIBITED_PROCESSES:
-        return ToolResult(False, f"Closing {exe_target} is prohibited for system safety.", "Cannot close protected system process.")
 
     try:
         res = subprocess.run(
@@ -779,8 +1059,8 @@ SAFE_FOLDERS: Dict[str, Path] = {
     "desktop": Path.home() / "Desktop",
     "videos": Path.home() / "Videos",
     "music": Path.home() / "Music",
-    "projects": Path("C:/Users/Ninad/Projects"),
-    "deskbot": Path("C:/Users/Ninad/Projects/deskbot"),
+    "projects": Path.home() / "Projects",
+    "deskbot": config.WORKSPACE_ROOT,
 }
 
 
@@ -930,6 +1210,105 @@ def _handle_calculate(query: Any) -> ToolResult:
     if res:
         return ToolResult(True, "Calculation successful", res)
     return ToolResult(False, "Calculation error", f"Could not calculate {expr}.")
+
+
+@REGISTRY.register("enter_developer_mode", description_fn=lambda q: "Entering Developer Mode")
+def _handle_enter_developer_mode(query: Any = None) -> ToolResult:
+    from tools.developer_tools import set_developer_mode
+    return set_developer_mode(True)
+
+
+@REGISTRY.register("exit_developer_mode", description_fn=lambda q: "Exiting Developer Mode")
+def _handle_exit_developer_mode(query: Any = None) -> ToolResult:
+    from tools.developer_tools import set_developer_mode
+    return set_developer_mode(False)
+
+
+@REGISTRY.register("developer_mode_status", description_fn=lambda q: "Checking Developer Mode status")
+def _handle_developer_mode_status(query: Any = None) -> ToolResult:
+    from tools.developer_tools import is_developer_mode
+    active = is_developer_mode()
+    spoken = f"Developer mode is currently {'on' if active else 'off'}."
+    return ToolResult(True, f"Developer mode: {active}", spoken, data={"developer_mode": active})
+
+
+@REGISTRY.register("get_active_window", description_fn=lambda q: "Detecting active window")
+def _handle_get_active_window(query: Any = None) -> ToolResult:
+    from tools.developer_tools import get_active_window
+    return get_active_window()
+
+
+@REGISTRY.register("get_current_file", description_fn=lambda q: "Identifying current file")
+def _handle_get_current_file(query: Any = None) -> ToolResult:
+    from tools.developer_tools import get_current_file
+    return get_current_file()
+
+
+@REGISTRY.register("get_current_workspace", description_fn=lambda q: "Checking current workspace")
+def _handle_get_current_workspace(query: Any = None) -> ToolResult:
+    from tools.developer_tools import get_current_workspace
+    return get_current_workspace()
+
+
+@REGISTRY.register("list_workspace_files", description_fn=lambda q: f"Listing files: {q or 'all'}")
+def _handle_list_workspace_files(query: Any = None) -> ToolResult:
+    from tools.developer_tools import list_workspace_files
+    ext = str(query) if query else ""
+    return list_workspace_files(ext)
+
+
+@REGISTRY.register("search_workspace", description_fn=lambda q: f"Searching workspace for: {q}")
+def _handle_search_workspace(query: Any = None) -> ToolResult:
+    from tools.developer_tools import search_workspace
+    return search_workspace(str(query or ""))
+
+
+@REGISTRY.register("read_active_file", description_fn=lambda q: f"Reading file: {q or 'active'}")
+def _handle_read_active_file(query: Any = None) -> ToolResult:
+    from tools.developer_tools import read_active_file
+    return read_active_file(str(query or ""))
+
+
+@REGISTRY.register("analyze_code", description_fn=lambda q: f"Analyzing code: {q or 'active'}")
+def _handle_analyze_code(query: Any = None) -> ToolResult:
+    from tools.developer_tools import analyze_code
+    return analyze_code(str(query or ""))
+
+
+@REGISTRY.register("run_tests", description_fn=lambda q: f"Running unit tests: {q or 'all'}")
+def _handle_run_tests(query: Any = None) -> ToolResult:
+    from tools.developer_tools import run_tests
+    return run_tests(str(query or ""))
+
+
+@REGISTRY.register("propose_patch", description_fn=lambda q: "Proposing code patch")
+def _handle_propose_patch(query: Any = None) -> ToolResult:
+    from tools.developer_tools import propose_patch
+    if isinstance(query, dict):
+        return propose_patch(
+            query.get("file", ""),
+            query.get("old_code", ""),
+            query.get("new_code", ""),
+        )
+    return ToolResult(False, "Missing patch parameters", "Could not propose patch without code details.")
+
+
+@REGISTRY.register("capture_screen_context", description_fn=lambda q: "Capturing screen context")
+def _handle_capture_screen_context(query: Any = None) -> ToolResult:
+    from tools.developer_tools import capture_screen_context
+    return capture_screen_context()
+
+
+@REGISTRY.register("apply_patch", description_fn=lambda q: f"Applying code patch: {q or 'staged'}")
+def _handle_apply_patch(query: Any = None) -> ToolResult:
+    from tools.developer_tools import apply_patch
+    return apply_patch(str(query or ""))
+
+
+@REGISTRY.register("rollback_patch", description_fn=lambda q: f"Rolling back patch: {q or 'last'}")
+def _handle_rollback_patch(query: Any = None) -> ToolResult:
+    from tools.developer_tools import rollback_patch
+    return rollback_patch(str(query or ""))
 
 
 @REGISTRY.register("unknown", description_fn=lambda q: "Unknown command")
