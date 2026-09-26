@@ -1,0 +1,116 @@
+"""Modular web search capability for DeskBot."""
+
+from __future__ import annotations
+
+import html
+import logging
+import re
+import urllib.parse
+import urllib.request
+from abc import ABC, abstractmethod
+from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class WebSearchProvider(ABC):
+    """Abstract interface for web search providers."""
+
+    @abstractmethod
+    def search(self, query: str, max_results: int = 3) -> List[Dict[str, str]]:
+        """Execute a web search and return structured results."""
+        pass
+
+
+class DuckDuckGoSearchProvider(WebSearchProvider):
+    """Zero-dependency DuckDuckGo search provider using standard web endpoints."""
+
+    BASE_URL = "https://html.duckduckgo.com/html/"
+    API_URL = "https://api.duckduckgo.com/"
+
+    def search(self, query: str, max_results: int = 3) -> List[Dict[str, str]]:
+        clean_query = query.strip()
+        if not clean_query:
+            return []
+
+        results: List[Dict[str, str]] = []
+
+        # 1. Try DuckDuckGo Instant Answer API first
+        try:
+            api_params = urllib.parse.urlencode({"q": clean_query, "format": "json", "no_html": "1"})
+            api_req = urllib.request.Request(
+                f"{self.API_URL}?{api_params}",
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            )
+            with urllib.request.urlopen(api_req, timeout=4.0) as resp:
+                import json
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                abstract = data.get("AbstractText", "").strip()
+                heading = data.get("Heading", "").strip()
+                source_url = data.get("AbstractURL", "").strip()
+                if abstract:
+                    results.append({
+                        "title": heading or clean_query,
+                        "snippet": abstract,
+                        "url": source_url or "https://duckduckgo.com",
+                    })
+        except Exception as api_err:
+            logger.debug("DuckDuckGo Instant Answer API note: %s", api_err)
+
+        if len(results) >= max_results:
+            return results[:max_results]
+
+        # 2. Scrape HTML results if instant answer didn't satisfy
+        try:
+            data_bytes = urllib.parse.urlencode({"q": clean_query}).encode("utf-8")
+            req = urllib.request.Request(
+                self.BASE_URL,
+                data=data_bytes,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                raw_html = resp.read().decode("utf-8", errors="ignore")
+
+            # Extract result blocks: class="result__snippet" and class="result__title"
+            title_matches = re.findall(r'<a[^>]+class="result__url"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', raw_html)
+            snippet_matches = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', raw_html)
+
+            for i in range(min(len(snippet_matches), max_results - len(results))):
+                snippet_clean = re.sub(r"<[^>]+>", "", snippet_matches[i])
+                snippet_clean = html.unescape(snippet_clean).strip()
+                url = title_matches[i][0] if i < len(title_matches) else "https://duckduckgo.com"
+                if "uddg=" in url:
+                    # Parse encoded redirect target
+                    parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+                    url = parsed.get("uddg", [url])[0]
+                results.append({
+                    "title": f"Result {len(results) + 1}",
+                    "snippet": snippet_clean,
+                    "url": url,
+                })
+        except Exception as scrape_err:
+            logger.debug("DuckDuckGo HTML query fallback error: %s", scrape_err)
+
+        return results[:max_results]
+
+
+_DEFAULT_PROVIDER: WebSearchProvider = DuckDuckGoSearchProvider()
+
+
+def set_search_provider(provider: WebSearchProvider) -> None:
+    """Set the active modular search provider."""
+    global _DEFAULT_PROVIDER
+    _DEFAULT_PROVIDER = provider
+
+
+def get_search_provider() -> WebSearchProvider:
+    """Get the active modular search provider."""
+    return _DEFAULT_PROVIDER
+
+
+def search_web(query: str, max_results: int = 3) -> List[Dict[str, str]]:
+    """Execute search using active provider."""
+    return _DEFAULT_PROVIDER.search(query=query, max_results=max_results)

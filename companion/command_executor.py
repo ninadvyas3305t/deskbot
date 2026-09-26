@@ -1,176 +1,957 @@
-"""Execute structured DeskBot AI intents on Windows."""
+"""Execute structured DeskBot AI intents on Windows via an extensible Action Registry."""
 
 from __future__ import annotations
 
+import ast
 import json
+import logging
+import os
+import re
 import subprocess
 import sys
+import threading
+import time
+import urllib.request
 import webbrowser
+from typing import Any, Callable, Dict, Tuple
 from urllib.parse import quote_plus
 
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
+logger = logging.getLogger(__name__)
+
+
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass
+class ToolResult:
+    """Standardized tool execution result."""
+    success: bool
+    message: str
+    response_text: str = ""
+    data: Any = None
+
+    def __bool__(self) -> bool:
+        """Allow backwards-compatible truth value testing (if result: ...)."""
+        return self.success
+
+
+class ActionRegistry:
+    """Registry mapping intent action names to execution handlers."""
+
+    def __init__(self):
+        self._handlers: Dict[str, Callable[[Any], Any]] = {}
+        self._descriptions: Dict[str, Callable[[Any], str]] = {}
+
+    def register(self, action_name: str, description_fn: Callable[[Any], str] | None = None):
+        """Decorator to register a handler for an action name."""
+        def decorator(func: Callable[[Any], Any]):
+            self._handlers[action_name] = func
+            if description_fn:
+                self._descriptions[action_name] = description_fn
+            else:
+                self._descriptions[action_name] = lambda q: f"Executing {action_name}"
+            return func
+        return decorator
+
+    def has_action(self, action_name: str) -> bool:
+        return action_name in self._handlers
+
+    def describe(self, action_name: str, query: Any = None) -> str:
+        desc_fn = self._descriptions.get(action_name)
+        if desc_fn:
+            try:
+                return desc_fn(query)
+            except Exception:
+                pass
+        return f"Executing {action_name}"
+
+    def execute(self, action_name: str, query: Any = None) -> ToolResult:
+        handler = self._handlers.get(action_name)
+        if not handler:
+            print(f"Unsupported AI action: {action_name}")
+            return ToolResult(False, f"Unsupported action: {action_name}", "DeskBot does not know how to perform this command.")
+        try:
+            res = handler(query)
+            if isinstance(res, ToolResult):
+                return res
+
+            desc = self.describe(action_name, query)
+            if bool(res):
+                return ToolResult(True, "Success", desc)
+            else:
+                return ToolResult(False, "Failed", f"Failed to execute {desc}.")
+        except Exception as error:
+            print(f"Action execution error ({action_name}): {error}", file=sys.stderr)
+            return ToolResult(False, str(error), f"Error while executing {action_name}: {error}")
+
+
+# Global registry instance
+REGISTRY = ActionRegistry()
+
+
+# --- Action Handlers ---
 
 def open_youtube() -> bool:
     """Open YouTube."""
-    print("Action: Opening YouTube")
     webbrowser.open("https://www.youtube.com")
     return True
 
 
 def search_youtube(query: str) -> bool:
     """Search YouTube for a query."""
-    query = query.strip()
-
-    if not query:
+    clean_query = (query or "").strip()
+    if not clean_query:
         return open_youtube()
-
-    print(f"Action: Searching YouTube for: {query}")
-
-    url = (
-        "https://www.youtube.com/results?search_query="
-        + quote_plus(query)
-    )
-
+    url = "https://www.youtube.com/results?search_query=" + quote_plus(clean_query)
     webbrowser.open(url)
     return True
 
 
-def play_youtube(query: str | None) -> bool:
-    """Handle a YouTube play request."""
+def find_first_youtube_video(query: str, timeout: float = 3.5) -> str | None:
+    """Extract the video ID of the first video result for a YouTube query."""
+    clean_query = query.strip()
+    if not clean_query:
+        return None
 
-    if not query:
-        print("Action: Opening YouTube for music")
-        return open_youtube()
-
-    print(f"Action: Playing/searching YouTube for: {query}")
-
-    url = (
-        "https://www.youtube.com/results?search_query="
-        + quote_plus(query)
+    search_url = f"https://www.youtube.com/results?search_query={quote_plus(clean_query)}"
+    req = urllib.request.Request(
+        search_url,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
     )
 
-    webbrowser.open(url)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            buffer = ""
+            while True:
+                chunk = response.read(32768)
+                if not chunk:
+                    break
+                buffer += chunk.decode("utf-8", errors="ignore")
+                matches = re.findall(r"watch\?v=([a-zA-Z0-9_-]{11})", buffer)
+                if matches:
+                    return matches[0]
+                if len(buffer) > 65536:
+                    buffer = buffer[-200:]
+    except Exception as error:
+        logger.debug("YouTube video ID extraction error: %s", error)
+
+    return None
+
+
+def play_youtube(query: str | None) -> bool:
+    """Handle a YouTube play request: directly plays the first matching video."""
+    clean_query = (query or "").strip()
+    if not clean_query:
+        return open_youtube()
+
+    # Try resolving the first matching video ID to launch playback immediately
+    video_id = find_first_youtube_video(clean_query)
+    if video_id:
+        direct_url = f"https://www.youtube.com/watch?v={video_id}"
+        webbrowser.open(direct_url)
+        return True
+
+    # Fallback to search results page
+    fallback_url = "https://www.youtube.com/results?search_query=" + quote_plus(clean_query)
+    webbrowser.open(fallback_url)
     return True
 
 
 def open_spotify() -> bool:
-    """Open Spotify."""
-    print("Action: Opening Spotify")
-
+    """Open Spotify desktop client."""
     subprocess.Popen(
         ["cmd", "/c", "start", "", "spotify:"],
         shell=False,
     )
-
     return True
 
 
-def launch_windows_app(app_name: str) -> bool:
-    """Launch a Windows application using app names or PATH executables."""
+def _bring_spotify_to_front() -> None:
+    """Attempt to bring Spotify window to the foreground."""
+    try:
+        import ctypes
+        import win32gui
+        user32 = ctypes.windll.user32
 
-    app_name = app_name.strip()
+        def enum_cb(hwnd, found):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd)
+                cls = win32gui.GetClassName(hwnd)
+                if "Spotify" in title or cls == "Chrome_WidgetWin_0":
+                    found.append(hwnd)
 
-    if not app_name:
-        print("No application name was provided.")
-        return False
+        hwnds: list[int] = []
+        win32gui.EnumWindows(enum_cb, hwnds)
+        if hwnds:
+            user32.ShowWindow(hwnds[0], 9)  # SW_RESTORE
+            user32.SetForegroundWindow(hwnds[0])
+    except Exception as err:
+        logger.debug("Could not bring Spotify to front: %s", err)
 
-    print(f"Action: Launching Windows app: {app_name}")
 
-    # Friendly-name aliases for common applications.
-    aliases = {
-        "visual studio code": "code",
-        "vs code": "code",
-        "vscode": "code",
-        "google chrome": "chrome",
-        "chrome browser": "chrome",
-    }
+def _send_key(vk_code: int) -> None:
+    """Send a keydown and keyup event for a given virtual key code."""
+    import ctypes
+    user32 = ctypes.windll.user32
+    user32.keybd_event(vk_code, 0, 0, 0)
+    time.sleep(0.04)
+    user32.keybd_event(vk_code, 0, 2, 0)  # KEYEVENTF_KEYUP = 2
 
-    lookup_name = aliases.get(
-        app_name.lower(),
-        app_name,
-    )
 
-    # First try the application directly through Windows.
-    result = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-Command",
-            f'Start-Process "{lookup_name}"',
-        ],
-        capture_output=True,
-        text=True,
-    )
+def _trigger_spotify_play() -> None:
+    """Helper thread to send Tab + Enter to play after Spotify loads search results."""
+    try:
+        # Give Spotify sufficient time to launch/focus and render network search results
+        time.sleep(2.2)
 
-    if result.returncode == 0:
-        print(f"Successfully launched: {app_name}")
+        # 1. Bring Spotify to front and send keys via Windows Script Host COM if available
+        try:
+            import win32com.client
+            wscript = win32com.client.Dispatch("WScript.Shell")
+            if wscript.AppActivate("Spotify"):
+                time.sleep(0.15)
+                # Tab moves focus out of the search input box onto the Top Result card
+                wscript.SendKeys("{TAB}")
+                time.sleep(0.1)
+                wscript.SendKeys("{ENTER}")
+                time.sleep(0.5)
+                wscript.SendKeys("{ENTER}")
+                return
+        except Exception as wscript_err:
+            logger.debug("WScript Spotify trigger failed: %s", wscript_err)
+
+        # 2. Fallback: Win32 API direct key simulation
+        _bring_spotify_to_front()
+        # Tab (0x09) moves focus from the search input field into the search results
+        _send_key(0x09)  # VK_TAB
+        time.sleep(0.1)
+        # Enter (0x0D) triggers playback on the Top Result
+        _send_key(0x0D)  # VK_RETURN
+        time.sleep(0.5)
+        _send_key(0x0D)  # VK_RETURN
+
+    except Exception as err:
+        logger.debug("Spotify auto-play trigger exception: %s", err)
+
+
+def play_spotify(query: str | None) -> bool:
+    """Handle a Spotify play/search request and trigger playback."""
+    clean_query = (query or "").strip()
+    if not clean_query:
+        return open_spotify()
+
+    encoded = quote_plus(clean_query)
+    try:
+        subprocess.Popen(
+            ["cmd", "/c", "start", "", f"spotify:search:{encoded}"],
+            shell=False,
+        )
+        # Launch background thread to press play on the top result
+        threading.Thread(target=_trigger_spotify_play, daemon=True).start()
+        return True
+    except Exception as error:
+        logger.warning("Could not launch Spotify protocol URI: %s", error)
+        webbrowser.open(f"https://open.spotify.com/search/{encoded}")
         return True
 
-    # If that fails, look for an executable on PATH.
-    try:
-        result = subprocess.run(
-            ["where.exe", lookup_name],
-            capture_output=True,
-            text=True,
-        )
-
-        executable = result.stdout.strip().splitlines()
-
-        if executable:
-            subprocess.Popen(executable[0])
-            print(f"Successfully launched: {app_name}")
-            return True
-
-    except OSError:
-        pass
-
-    print(f"Could not find installed app: {app_name}")
-    return False
 
 def open_google() -> bool:
-    """Open Google."""
-    print("Action: Opening Google")
+    """Open Google homepage."""
     webbrowser.open("https://www.google.com")
     return True
 
 
-def execute_intent(intent: dict) -> bool:
-    """Execute an intent returned by the AI brain."""
+COMMON_APP_MAP: Dict[str, str] = {
+    # System Utilities & Accessories
+    "calculator": "calc.exe",
+    "calc": "calc.exe",
+    "notepad": "notepad.exe",
+    "notes": "notepad.exe",
+    "paint": "mspaint.exe",
+    "mspaint": "mspaint.exe",
+    "snipping tool": "SnippingTool.exe",
+    "snippingtool": "SnippingTool.exe",
+    "snip": "ms-screenclip:",
+    "task manager": "taskmgr.exe",
+    "taskmgr": "taskmgr.exe",
+    "task monitor": "taskmgr.exe",
+    "file explorer": "explorer.exe",
+    "explorer": "explorer.exe",
+    "files": "explorer.exe",
+    "my computer": "explorer.exe",
+    "this pc": "explorer.exe",
+    "control panel": "control.exe",
+    "command prompt": "cmd.exe",
+    "cmd": "cmd.exe",
+    "terminal": "wt.exe",
+    "windows terminal": "wt.exe",
+    "wt": "wt.exe",
+    "powershell": "powershell.exe",
+    "registry editor": "regedit.exe",
+    "regedit": "regedit.exe",
+    "device manager": "devmgmt.msc",
+    "disk cleanup": "cleanmgr.exe",
+    "character map": "charmap.exe",
+    "services": "services.msc",
+    "event viewer": "eventvwr.msc",
+    "resource monitor": "resmon.exe",
 
-    action = intent.get("action")
-    query = intent.get("query")
+    # Windows Settings & UWP Apps
+    "settings": "ms-settings:",
+    "windows settings": "ms-settings:",
+    "system settings": "ms-settings:",
+    "clock": "ms-clock:",
+    "alarms": "ms-clock:",
+    "alarm": "ms-clock:",
+    "timer": "ms-clock:",
+    "stopwatch": "ms-clock:",
+    "camera": "microsoft.windows.camera:",
+    "photos": "ms-photos:",
+    "photo viewer": "ms-photos:",
+    "store": "ms-windows-store:",
+    "microsoft store": "ms-windows-store:",
+    "windows store": "ms-windows-store:",
+    "weather": "bingweather:",
+    "maps": "bingmaps:",
+    "sticky notes": "shell:AppsFolder\\Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe!App",
 
-    print(f"AI action: {action}")
-    print(f"AI query: {query}")
+    # Web Browsers
+    "google chrome": "chrome.exe",
+    "chrome": "chrome.exe",
+    "chrome browser": "chrome.exe",
+    "firefox": "firefox.exe",
+    "mozilla firefox": "firefox.exe",
+    "edge": "msedge.exe",
+    "microsoft edge": "msedge.exe",
+    "ms edge": "msedge.exe",
+    "brave": "brave.exe",
+    "opera": "opera.exe",
 
-    if action == "open_app":
-        return launch_windows_app(str(query or ""))
+    # Development & Productivity
+    "visual studio code": "code",
+    "vs code": "code",
+    "vscode": "code",
+    "code": "code",
+    "visual studio": "devenv.exe",
+    "git bash": "git-bash.exe",
 
-    elif action == "open_website":
-        website = str(query or "").lower()
+    # Office Suite
+    "word": "winword.exe",
+    "microsoft word": "winword.exe",
+    "ms word": "winword.exe",
+    "excel": "excel.exe",
+    "microsoft excel": "excel.exe",
+    "ms excel": "excel.exe",
+    "powerpoint": "powerpnt.exe",
+    "microsoft powerpoint": "powerpnt.exe",
+    "ppt": "powerpnt.exe",
+    "outlook": "olk.exe",
+    "microsoft outlook": "olk.exe",
+    "teams": "msteams.exe",
+    "microsoft teams": "msteams.exe",
 
-        if website in {"youtube", "yt"}:
-            return open_youtube()
+    # Media & Third Party
+    "spotify": "spotify:",
+    "vlc": "vlc.exe",
+    "vlc media player": "vlc.exe",
+    "media player": "wmplayer.exe",
+    "blender": "blender.exe",
+    "steam": "steam.exe",
+    "discord": "discord.exe",
+    "slack": "slack.exe",
+    "obs": "obs64.exe",
+    "obs studio": "obs64.exe",
+    "epic games": "EpicGamesLauncher.exe",
+    "epic games launcher": "EpicGamesLauncher.exe",
+    "7-zip": "7zFM.exe",
+    "7zip": "7zFM.exe",
+}
 
-        if website == "google":
-            return open_google()
+_SHORTCUT_CACHE: list[tuple[str, str]] | None = None
+_SHORTCUT_CACHE_TIME: float = 0.0
 
-    elif action == "youtube_search":
-        return search_youtube(str(query or ""))
 
-    elif action == "youtube_play":
-        return play_youtube(
-            str(query) if query else None
+def get_installed_shortcuts(refresh: bool = False) -> list[tuple[str, str]]:
+    """Scan Start Menu and Desktop directories for .lnk shortcuts, with caching."""
+    global _SHORTCUT_CACHE, _SHORTCUT_CACHE_TIME
+    now = time.time()
+    if not refresh and _SHORTCUT_CACHE is not None and (now - _SHORTCUT_CACHE_TIME) < 60.0:
+        return _SHORTCUT_CACHE
+
+    dirs = [
+        os.path.expandvars(r"%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs"),
+        os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs"),
+        os.path.expandvars(r"%USERPROFILE%\Desktop"),
+        os.path.expandvars(r"%PUBLIC%\Desktop"),
+    ]
+    shortcuts: list[tuple[str, str]] = []
+    for directory in dirs:
+        if os.path.exists(directory):
+            for root, _, files in os.walk(directory):
+                for f in files:
+                    if f.lower().endswith(".lnk"):
+                        name = os.path.splitext(f)[0]
+                        full_path = os.path.join(root, f)
+                        shortcuts.append((name, full_path))
+
+    _SHORTCUT_CACHE = shortcuts
+    _SHORTCUT_CACHE_TIME = now
+    return shortcuts
+
+
+def find_best_shortcut(query: str, shortcuts: list[tuple[str, str]]) -> str | None:
+    """Find the best matching shortcut path for a given app name."""
+    clean_q = query.lower().strip()
+    q_words = [w for w in re.split(r"[\s\-_]+", clean_q) if w]
+    if not q_words:
+        return None
+
+    penalized_terms = {
+        "uninstall",
+        "help",
+        "readme",
+        "documentation",
+        "manual",
+        "website",
+        "support",
+        "license",
+        "setup",
+    }
+
+    scored: list[tuple[int, str]] = []
+    for name, path in shortcuts:
+        nl = name.lower()
+        n_words = [w for w in re.split(r"[\s\-_]+", nl) if w]
+
+        penalty = 1000 if any(p in nl for p in penalized_terms) else 0
+
+        # 1. Exact match
+        if nl == clean_q:
+            scored.append((0 + penalty, path))
+            continue
+
+        # 2. Substring matches
+        if clean_q in nl:
+            score = len(nl) - len(clean_q) + penalty
+            scored.append((score, path))
+            continue
+        elif nl in clean_q:
+            score = len(clean_q) - len(nl) + 50 + penalty
+            scored.append((score, path))
+            continue
+
+        # 3. Word overlap
+        common = set(q_words).intersection(set(n_words))
+        if common:
+            match_ratio = len(common) / max(len(q_words), 1)
+            if match_ratio >= 0.5:
+                score = int((1.0 - match_ratio) * 100) + len(nl) + penalty
+                scored.append((score, path))
+
+    if scored:
+        scored.sort(key=lambda x: x[0])
+        return scored[0][1]
+
+    return None
+
+
+_REGISTRY_APP_PATHS_CACHE: dict[str, str] | None = None
+
+
+def get_registry_app_paths() -> dict[str, str]:
+    """Retrieve executable registrations from Windows Registry App Paths."""
+    global _REGISTRY_APP_PATHS_CACHE
+    if _REGISTRY_APP_PATHS_CACHE is not None:
+        return _REGISTRY_APP_PATHS_CACHE
+
+    results: dict[str, str] = {}
+    if winreg is None:
+        _REGISTRY_APP_PATHS_CACHE = results
+        return results
+
+    for root_key in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(root_key, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths") as key:
+                count = winreg.QueryInfoKey(key)[0]
+                for i in range(count):
+                    try:
+                        subkey_name = winreg.EnumKey(key, i)
+                        with winreg.OpenKey(key, subkey_name) as subkey:
+                            val, _ = winreg.QueryValueEx(subkey, "")
+                            if val:
+                                results[subkey_name.lower()] = val
+                                base = os.path.splitext(subkey_name)[0].lower()
+                                results[base] = val
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    _REGISTRY_APP_PATHS_CACHE = results
+    return results
+
+
+def find_installed_app(app_name: str) -> str | None:
+    """Resolve an application query to an executable, shortcut, or protocol URI."""
+    clean = (app_name or "").strip()
+    if not clean:
+        return None
+
+    # Remove conversational prefixes/suffixes
+    clean = re.sub(r"^(?:the|a)\s+", "", clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r"\s+app(?:lication)?$", "", clean, flags=re.IGNORECASE).strip()
+    clean_lower = clean.lower()
+
+    # 1. Check known system/protocol alias map
+    if clean_lower in COMMON_APP_MAP:
+        return COMMON_APP_MAP[clean_lower]
+
+    # 2. Check Start Menu and Desktop shortcuts
+    shortcuts = get_installed_shortcuts()
+    matched_shortcut = find_best_shortcut(clean_lower, shortcuts)
+    if matched_shortcut:
+        return matched_shortcut
+
+    # 3. Check Windows Registry App Paths
+    app_paths = get_registry_app_paths()
+    if clean_lower in app_paths:
+        return app_paths[clean_lower]
+    if f"{clean_lower}.exe" in app_paths:
+        return app_paths[f"{clean_lower}.exe"]
+
+    # 4. Check %LOCALAPPDATA%\Microsoft\WindowsApps
+    winapps_dir = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps")
+    if os.path.exists(winapps_dir):
+        candidate = os.path.join(winapps_dir, f"{clean_lower}.exe")
+        if os.path.isfile(candidate):
+            return candidate
+
+    # 5. Check PATH via where.exe
+    try:
+        where_res = subprocess.run(
+            ["where.exe", clean_lower],
+            capture_output=True,
+            text=True,
         )
+        if where_res.returncode == 0:
+            lines = where_res.stdout.strip().splitlines()
+            if lines:
+                return lines[0]
+    except OSError:
+        pass
 
-    elif action == "spotify_open":
-        return open_spotify()
+    return None
 
-    elif action == "unknown":
-        print("DeskBot does not know how to perform this command.")
+
+def _launch_target(target: str) -> bool:
+    """Launch a target (file, shortcut, URI, or command) non-blockingly."""
+    # 1. Native Windows ShellExecute
+    if hasattr(os, "startfile"):
+        try:
+            os.startfile(target)
+            return True
+        except Exception as err:
+            logger.debug("os.startfile failed for %r: %s", target, err)
+
+    # 2. Command shell start
+    try:
+        subprocess.Popen(
+            ["cmd", "/c", "start", "", target],
+            shell=False,
+        )
+        return True
+    except Exception as err:
+        logger.debug("cmd start failed for %r: %s", target, err)
+
+    # 3. PowerShell Start-Process fallback
+    try:
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", f'Start-Process "{target}"'],
+            capture_output=True,
+            text=True,
+        )
+        if res.returncode == 0:
+            return True
+    except Exception as err:
+        logger.debug("PowerShell Start-Process failed for %r: %s", target, err)
+
+    return False
+
+
+def launch_windows_app(app_name: str) -> bool:
+    """Launch any Windows application installed on the system."""
+    clean_name = (app_name or "").strip()
+    if not clean_name:
+        print("No application name was provided.")
         return False
 
-    print(f"Unsupported AI action: {action}")
+    target = find_installed_app(clean_name)
+    if not target:
+        target = clean_name
+
+    success = _launch_target(target)
+    if success:
+        logger.info("Successfully launched app %r (resolved target: %r)", clean_name, target)
+        return True
+
+    print(f"Could not find or launch installed app: {clean_name}")
     return False
+
+
+# --- Registration ---
+
+@REGISTRY.register("open_app", description_fn=lambda q: f"Launching Windows app: {q}")
+def _handle_open_app(query: Any) -> bool:
+    return launch_windows_app(str(query or ""))
+
+
+@REGISTRY.register("open_website", description_fn=lambda q: f"Opening website: {q}")
+def _handle_open_website(query: Any) -> bool:
+    website = str(query or "").strip().lower()
+    if website in {"youtube", "yt", "youtube.com", "www.youtube.com"}:
+        return open_youtube()
+    if website in {"google", "google.com", "www.google.com"}:
+        return open_google()
+    if website.startswith(("http://", "https://")):
+        webbrowser.open(website)
+        return True
+    if "." in website:
+        webbrowser.open(f"https://{website}")
+        return True
+    print(f"Unrecognized website address: {website}")
+    return False
+
+
+@REGISTRY.register("youtube_search", description_fn=lambda q: f"Searching YouTube for: {q}")
+def _handle_youtube_search(query: Any) -> bool:
+    return search_youtube(str(query or ""))
+
+
+@REGISTRY.register("youtube_play", description_fn=lambda q: f"Playing YouTube: {q or 'music'}")
+def _handle_youtube_play(query: Any) -> bool:
+    return play_youtube(str(query) if query else None)
+
+
+@REGISTRY.register("spotify_open", description_fn=lambda q: "Opening Spotify")
+def _handle_spotify_open(query: Any) -> bool:
+    return open_spotify()
+
+
+@REGISTRY.register("spotify_play", description_fn=lambda q: f"Playing on Spotify: {q or 'music'}")
+def _handle_spotify_play(query: Any) -> bool:
+    return play_spotify(str(query) if query else None)
+
+
+# --- Volume and Audio Controls ---
+VK_VOLUME_MUTE = 0xAD
+VK_VOLUME_DOWN = 0xAE
+VK_VOLUME_UP = 0xAF
+
+
+def _adjust_volume(increase: bool, amount: int = 10) -> ToolResult:
+    """Safely adjust Windows master volume using virtual key events."""
+    steps = max(1, min(25, amount // 2))
+    vk = VK_VOLUME_UP if increase else VK_VOLUME_DOWN
+    try:
+        import ctypes
+        for _ in range(steps):
+            ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(vk, 0, 2, 0)
+            time.sleep(0.015)
+        direction = "increased" if increase else "decreased"
+        return ToolResult(True, f"Volume {direction} by {steps * 2}%", f"Volume {direction}.")
+    except Exception as err:
+        return ToolResult(False, f"Volume error: {err}", "Failed to adjust volume.")
+
+
+def _toggle_mute(mute: bool = True) -> ToolResult:
+    """Safely toggle master volume mute state."""
+    try:
+        import ctypes
+        ctypes.windll.user32.keybd_event(VK_VOLUME_MUTE, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(VK_VOLUME_MUTE, 0, 2, 0)
+        action_word = "muted" if mute else "unmuted"
+        return ToolResult(True, f"Master volume {action_word}", f"Audio {action_word}.")
+    except Exception as err:
+        return ToolResult(False, f"Mute toggle error: {err}", "Failed to toggle audio mute.")
+
+
+@REGISTRY.register("volume_up", description_fn=lambda q: f"Increasing volume: {q or '10%'}")
+def _handle_volume_up(query: Any) -> ToolResult:
+    amount = 10
+    if query:
+        match = re.search(r"\d+", str(query))
+        if match:
+            amount = int(match.group())
+    return _adjust_volume(increase=True, amount=amount)
+
+
+@REGISTRY.register("volume_down", description_fn=lambda q: f"Decreasing volume: {q or '10%'}")
+def _handle_volume_down(query: Any) -> ToolResult:
+    amount = 10
+    if query:
+        match = re.search(r"\d+", str(query))
+        if match:
+            amount = int(match.group())
+    return _adjust_volume(increase=False, amount=amount)
+
+
+@REGISTRY.register("mute", description_fn=lambda q: "Muting master volume")
+def _handle_mute(query: Any) -> ToolResult:
+    return _toggle_mute(mute=True)
+
+
+@REGISTRY.register("unmute", description_fn=lambda q: "Unmuting master volume")
+def _handle_unmute(query: Any) -> ToolResult:
+    return _toggle_mute(mute=False)
+
+
+@REGISTRY.register("screenshot", description_fn=lambda q: "Capturing screenshot")
+def _handle_screenshot(query: Any) -> ToolResult:
+    try:
+        import datetime
+        from PIL import ImageGrab
+        screenshots_dir = Path.home() / "Pictures" / "Screenshots"
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"DeskBot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        target_path = screenshots_dir / filename
+        img = ImageGrab.grab()
+        img.save(str(target_path))
+        return ToolResult(
+            True,
+            f"Saved to {target_path}",
+            "Screenshot captured and saved to your Screenshots folder.",
+            data=str(target_path),
+        )
+    except Exception as err:
+        logger.debug("Screenshot error: %s", err)
+        return ToolResult(False, f"Screenshot error: {err}", "Could not capture a screenshot.")
+
+
+PROHIBITED_PROCESSES = {
+    "explorer.exe", "winlogon.exe", "csrss.exe", "smss.exe", "svchost.exe",
+    "services.exe", "lsass.exe", "dwm.exe", "system", "idle"
+}
+
+
+@REGISTRY.register("close_app", description_fn=lambda q: f"Closing application: {q}")
+def _handle_close_app(query: Any) -> ToolResult:
+    clean_name = str(query or "").strip().lower()
+    if not clean_name:
+        return ToolResult(False, "Missing app name", "Please specify which application to close.")
+
+    exe_target = COMMON_APP_MAP.get(clean_name, clean_name)
+    if not exe_target.lower().endswith(".exe"):
+        exe_target += ".exe"
+
+    if exe_target.lower() in PROHIBITED_PROCESSES:
+        return ToolResult(False, f"Closing {exe_target} is prohibited for system safety.", "Cannot close protected system process.")
+
+    try:
+        res = subprocess.run(
+            ["taskkill", "/IM", exe_target, "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0:
+            return ToolResult(True, f"Closed {exe_target}", f"Closed {clean_name.title()}.")
+        elif res.returncode == 128:
+            return ToolResult(False, f"{exe_target} was not running", f"{clean_name.title()} is not currently open.")
+        else:
+            return ToolResult(False, res.stderr.strip() or "Taskkill failed", f"Could not close {clean_name.title()}.")
+    except Exception as err:
+        return ToolResult(False, str(err), f"Error closing {clean_name.title()}: {err}")
+
+
+SAFE_FOLDERS: Dict[str, Path] = {
+    "downloads": Path.home() / "Downloads",
+    "documents": Path.home() / "Documents",
+    "pictures": Path.home() / "Pictures",
+    "desktop": Path.home() / "Desktop",
+    "videos": Path.home() / "Videos",
+    "music": Path.home() / "Music",
+    "projects": Path("C:/Users/Ninad/Projects"),
+    "deskbot": Path("C:/Users/Ninad/Projects/deskbot"),
+}
+
+
+def _extract_path_arg(query: Any) -> str:
+    """Helper to extract path/target argument from string or dict."""
+    if isinstance(query, dict):
+        if "arguments" in query and isinstance(query["arguments"], dict):
+            return str(query["arguments"].get("path") or query["arguments"].get("query") or "")
+        return str(query.get("path") or query.get("query") or query.get("file") or query.get("folder") or "")
+    return str(query or "").strip()
+
+
+@REGISTRY.register("open_file_explorer", description_fn=lambda q: "Opening File Explorer")
+def _handle_open_file_explorer(query: Any = None) -> ToolResult:
+    from tools.file_tools import open_file_explorer
+    return open_file_explorer()
+
+
+@REGISTRY.register("open_folder", description_fn=lambda q: f"Opening folder: {_extract_path_arg(q) or 'Explorer'}")
+def _handle_open_folder(query: Any) -> ToolResult:
+    from tools.file_tools import open_folder
+    target = _extract_path_arg(query)
+    return open_folder(target)
+
+
+@REGISTRY.register("create_file", description_fn=lambda q: f"Creating file: {_extract_path_arg(q)}")
+def _handle_create_file(query: Any) -> ToolResult:
+    from tools.file_tools import create_file
+    target = _extract_path_arg(query)
+    content = ""
+    if isinstance(query, dict):
+        content = str(query.get("content", ""))
+    return create_file(target, content=content)
+
+
+@REGISTRY.register("create_folder", description_fn=lambda q: f"Creating folder: {_extract_path_arg(q)}")
+def _handle_create_folder(query: Any) -> ToolResult:
+    from tools.file_tools import create_folder
+    target = _extract_path_arg(query)
+    return create_folder(target)
+
+
+@REGISTRY.register("open_file", description_fn=lambda q: f"Opening file: {_extract_path_arg(q)}")
+def _handle_open_file(query: Any) -> ToolResult:
+    from tools.file_tools import open_file
+    target = _extract_path_arg(query)
+    return open_file(target)
+
+
+@REGISTRY.register("open_in_vscode", description_fn=lambda q: f"Opening in VS Code: {_extract_path_arg(q) or 'DeskBot project'}")
+def _handle_open_in_vscode(query: Any = None) -> ToolResult:
+    from tools.file_tools import open_in_vscode
+    target = _extract_path_arg(query)
+    return open_in_vscode(target)
+
+
+@REGISTRY.register("open_project_in_vscode", description_fn=lambda q: "Opening DeskBot project in VS Code")
+def _handle_open_project_in_vscode(query: Any = None) -> ToolResult:
+    from tools.file_tools import open_in_vscode
+    target = _extract_path_arg(query) or "deskbot"
+    return open_in_vscode(target)
+
+
+@REGISTRY.register("delete_file", description_fn=lambda q: f"Deleting file: {_extract_path_arg(q)}")
+def _handle_delete_file(query: Any) -> ToolResult:
+    from tools.file_tools import delete_file
+    target = _extract_path_arg(query)
+    return delete_file(target)
+
+
+@REGISTRY.register("delete_folder", description_fn=lambda q: f"Deleting folder: {_extract_path_arg(q)}")
+def _handle_delete_folder(query: Any) -> ToolResult:
+    from tools.file_tools import delete_folder
+    target = _extract_path_arg(query)
+    return delete_folder(target)
+
+
+
+@REGISTRY.register("web_search", description_fn=lambda q: f"Searching web for: {q}")
+def _handle_web_search(query: Any) -> ToolResult:
+    from tools.web_search import search_web
+    clean_q = str(query or "").strip()
+    if not clean_q:
+        return ToolResult(False, "Missing search query", "Please specify what you would like to search for.")
+    results = search_web(clean_q, max_results=3)
+    if not results:
+        return ToolResult(False, f"No results for {clean_q}", f"I couldn't find any web results for '{clean_q}'.")
+    top_snippet = results[0]["snippet"]
+    return ToolResult(True, f"Found {len(results)} results", f"Here is what I found for '{clean_q}': {top_snippet}", data=results)
+
+
+@REGISTRY.register("current_time", description_fn=lambda q: "Checking current time")
+def _handle_current_time(query: Any = None) -> ToolResult:
+    from tools.info_tools import get_current_time
+    t = get_current_time()
+    return ToolResult(True, f"Time: {t}", f"It's {t}.")
+
+
+@REGISTRY.register("current_date", description_fn=lambda q: "Checking current date")
+def _handle_current_date(query: Any = None) -> ToolResult:
+    from tools.info_tools import get_current_date
+    d = get_current_date()
+    return ToolResult(True, f"Date: {d}", f"Today is {d}.")
+
+
+@REGISTRY.register("system_info", description_fn=lambda q: "Checking system metrics")
+def _handle_system_info(query: Any = None) -> ToolResult:
+    from tools.info_tools import get_system_info
+    info = get_system_info()
+    cpu = info.get("cpu_percent", "N/A")
+    ram = info.get("ram_percent", "N/A")
+    battery = info.get("battery_percent")
+    b_text = f", battery is at {battery}%" if battery is not None else ""
+    resp = f"CPU usage is {cpu}%, RAM is at {ram}%{b_text}."
+    return ToolResult(True, str(info), resp, data=info)
+
+
+@REGISTRY.register("weather", description_fn=lambda q: f"Checking weather: {q or 'local'}")
+def _handle_weather(query: Any = None) -> ToolResult:
+    from tools.info_tools import get_weather
+    res = get_weather(str(query) if query else None)
+    if "error" in res:
+        return ToolResult(False, res["error"], f"Could not retrieve weather: {res['error']}")
+    city = res["city"]
+    temp = res["temperature_c"]
+    cond = res["condition"]
+    return ToolResult(True, f"{city}: {temp}°C {cond}", f"The weather in {city} is {temp}°C with {cond.lower()}.", data=res)
+
+
+@REGISTRY.register("direct_answer", description_fn=lambda q: "Direct answer")
+def _handle_direct_answer(query: Any) -> ToolResult:
+    text = str(query or "").strip()
+    return ToolResult(True, "Direct answer", text)
+
+
+@REGISTRY.register("calculate", description_fn=lambda q: f"Calculating: {q}")
+def _handle_calculate(query: Any) -> ToolResult:
+    from tools.calculator import evaluate_math
+    expr = str(query or "").strip()
+    res = evaluate_math(expr)
+    if res:
+        return ToolResult(True, "Calculation successful", res)
+    return ToolResult(False, "Calculation error", f"Could not calculate {expr}.")
+
+
+@REGISTRY.register("unknown", description_fn=lambda q: "Unknown command")
+def _handle_unknown(query: Any) -> ToolResult:
+    print("DeskBot does not know how to perform this command.")
+    return ToolResult(False, "Unknown command", "DeskBot does not know how to perform this command.")
+
+
+def get_action_description(intent: dict) -> str:
+    """Get user-friendly string description of an intent."""
+    action = intent.get("action", "unknown")
+    query = intent.get("response") if "response" in intent else intent.get("query")
+    return REGISTRY.describe(action, query)
+
+
+def execute_intent(intent: dict) -> ToolResult:
+    """Execute an intent returned by the AI brain and return ToolResult."""
+    if not isinstance(intent, dict):
+        print(f"Invalid intent format: expected dict, got {type(intent)}")
+        return ToolResult(False, "Invalid intent format", "Invalid intent received.")
+
+    action = intent.get("action")
+    query = intent.get("response") if "response" in intent else intent.get("query")
+
+    if not action:
+        print("Intent missing 'action' field.")
+        return ToolResult(False, "Missing action", "Command missing action.")
+
+    return REGISTRY.execute(action, query)
+
 
 
 def main() -> int:
@@ -182,16 +963,18 @@ def main() -> int:
 
     try:
         intent = json.loads(raw_intent)
-    except json.JSONDecodeError as error:
-        print(f"Invalid AI JSON: {error}", file=sys.stderr)
-        return 1
+    except json.JSONDecodeError:
+        try:
+            intent = ast.literal_eval(raw_intent)
+        except Exception as error:
+            print(f"Invalid AI JSON: {error}", file=sys.stderr)
+            return 1
 
     if not isinstance(intent, dict):
         print("AI response must be a JSON object.", file=sys.stderr)
         return 1
 
     success = execute_intent(intent)
-
     return 0 if success else 1
 
 

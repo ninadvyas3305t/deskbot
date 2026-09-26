@@ -1,0 +1,1 @@
+"""DeskBot companion test package."""

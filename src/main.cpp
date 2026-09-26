@@ -2,12 +2,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-
-#include <LittleFS.h>
 #include "driver/i2s.h"
-#include "AudioFileSourceLittleFS.h"
-#include "AudioGeneratorWAV.h"
-#include "AudioOutputI2S.h"
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -17,13 +12,13 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 int eyeOffsetX = 0;
 int eyeOffsetY = 0;
 
-// ================= WAV AUDIO =================
+// ================= SPEAKER PINS (POSTPONED & SILENCED) =================
+// Pulled LOW to prevent MAX98357A amplifier crackle while hardware is being redesigned.
+#define SPK_DOUT 15
+#define SPK_BCLK 16
+#define SPK_LRC  17
 
-#define I2S_DOUT 15
-#define I2S_BCLK 16
-#define I2S_LRC 17
-// ================= MICROPHONE =================
-
+// ================= MICROPHONE (INMP441) =================
 #define MIC_I2S_PORT I2S_NUM_1
 
 #define MIC_SCK 4
@@ -36,78 +31,11 @@ int eyeOffsetY = 0;
 #define RECORD_BAUD 921600
 
 int32_t micSamples[MIC_BUFFER_SIZE];
-
 bool microphoneReady = false;
 
-AudioOutputI2S *audioOutput = nullptr;
-AudioGeneratorWAV *wavPlayer = nullptr;
-AudioFileSourceLittleFS *wavFile = nullptr;
-
-
-// Play a WAV file from LittleFS
-void startWav(const char *filename)
-{
-    Serial.print("Starting: ");
-    Serial.println(filename);
-
-    // Stop any currently playing sound
-    if (wavPlayer != nullptr)
-    {
-        if (wavPlayer->isRunning())
-        {
-            wavPlayer->stop();
-        }
-
-        delete wavPlayer;
-        wavPlayer = nullptr;
-    }
-
-    if (wavFile != nullptr)
-    {
-        delete wavFile;
-        wavFile = nullptr;
-    }
-
-    wavFile = new AudioFileSourceLittleFS(filename);
-    wavPlayer = new AudioGeneratorWAV();
-
-    if (!wavPlayer->begin(wavFile, audioOutput))
-    {
-        Serial.print("Failed to start: ");
-        Serial.println(filename);
-
-        delete wavPlayer;
-        wavPlayer = nullptr;
-
-        delete wavFile;
-        wavFile = nullptr;
-
-        return;
-    }
-}
-
-void updateAudio()
-{
-    if (wavPlayer != nullptr && wavPlayer->isRunning())
-    {
-        if (!wavPlayer->loop())
-        {
-            wavPlayer->stop();
-
-            delete wavPlayer;
-            wavPlayer = nullptr;
-
-            delete wavFile;
-            wavFile = nullptr;
-
-            Serial.println("Audio finished.");
-        }
-    }
-}
-
 const int touchPin = 7;
-
 bool lastTouchState = false;
+unsigned long lastTouchTime = 0;
 
 unsigned long curiousUntil = 0;
 unsigned long lastInteraction = 0;
@@ -155,7 +83,6 @@ void drawEyesOpen()
     switch (currentMood)
     {
         case CALM:
-
             display.fillRoundRect(
                 28 + eyeOffsetX,
                 20 + eyeOffsetY,
@@ -175,11 +102,9 @@ void drawEyesOpen()
                 SSD1306_WHITE);
 
             drawPupils();
-
             break;
 
         case CURIOUS:
-
             display.fillRoundRect(
                 28 + eyeOffsetX,
                 16 + eyeOffsetY,
@@ -199,11 +124,9 @@ void drawEyesOpen()
                 SSD1306_WHITE);
 
             drawPupils();
-
             break;
 
         case SLEEPY:
-
             display.fillRoundRect(
                 28 + eyeOffsetX,
                 28 + eyeOffsetY,
@@ -219,7 +142,6 @@ void drawEyesOpen()
                 12,
                 6,
                 SSD1306_WHITE);
-
             break;
     }
 
@@ -249,6 +171,160 @@ void drawEyesClosed()
     display.display();
 }
 
+// ================= ASSISTANT UI STATES =================
+enum AssistantUIState
+{
+    UI_IDLE,
+    UI_LISTENING,
+    UI_TRANSCRIBING,
+    UI_THINKING,
+    UI_EXECUTING,
+    UI_SPEAKING,
+    UI_ERROR
+};
+
+AssistantUIState currentUIState = UI_IDLE;
+
+void drawStateFace(AssistantUIState state)
+{
+    display.clearDisplay();
+
+    switch (state)
+    {
+        case UI_IDLE:
+            display.fillRoundRect(28, 20, 24, 24, 8, SSD1306_WHITE);
+            display.fillRoundRect(76, 20, 24, 24, 8, SSD1306_WHITE);
+            display.fillCircle(40, 32, 4, SSD1306_BLACK);
+            display.fillCircle(88, 32, 4, SSD1306_BLACK);
+            break;
+
+        case UI_LISTENING:
+            // Alert / wide attentive open eyes
+            display.fillRoundRect(28, 14, 24, 34, 10, SSD1306_WHITE);
+            display.fillRoundRect(76, 14, 24, 34, 10, SSD1306_WHITE);
+            display.fillCircle(40, 31, 5, SSD1306_BLACK);
+            display.fillCircle(88, 31, 5, SSD1306_BLACK);
+            display.setTextSize(1);
+            display.setTextColor(SSD1306_WHITE);
+            display.setCursor(38, 54);
+            display.print("LISTENING");
+            break;
+
+        case UI_TRANSCRIBING:
+            // Hearing / transcribing: eyes looking up & left
+            display.fillRoundRect(28, 18, 24, 26, 8, SSD1306_WHITE);
+            display.fillRoundRect(76, 18, 24, 26, 8, SSD1306_WHITE);
+            display.fillCircle(36, 25, 4, SSD1306_BLACK);
+            display.fillCircle(84, 25, 4, SSD1306_BLACK);
+            display.setTextSize(1);
+            display.setTextColor(SSD1306_WHITE);
+            display.setCursor(44, 54);
+            display.print("HEARING");
+            break;
+
+        case UI_THINKING:
+            // Curious / thinking: one eye slightly raised
+            display.fillRoundRect(28, 14, 24, 30, 8, SSD1306_WHITE);
+            display.fillRoundRect(76, 20, 24, 24, 8, SSD1306_WHITE);
+            display.fillCircle(40, 28, 4, SSD1306_BLACK);
+            display.fillCircle(88, 32, 4, SSD1306_BLACK);
+            display.setTextSize(1);
+            display.setTextColor(SSD1306_WHITE);
+            display.setCursor(40, 54);
+            display.print("THINKING");
+            break;
+
+        case UI_EXECUTING:
+            // Focused / determined eyes
+            display.fillRoundRect(28, 24, 24, 18, 6, SSD1306_WHITE);
+            display.fillRoundRect(76, 24, 24, 18, 6, SSD1306_WHITE);
+            display.fillCircle(40, 33, 4, SSD1306_BLACK);
+            display.fillCircle(88, 33, 4, SSD1306_BLACK);
+            display.setTextSize(1);
+            display.setTextColor(SSD1306_WHITE);
+            display.setCursor(37, 54);
+            display.print("EXECUTING");
+            break;
+
+        case UI_SPEAKING:
+            // Talking / responding face: bright animated eyes with open smile
+            display.fillRoundRect(28, 16, 24, 28, 8, SSD1306_WHITE);
+            display.fillRoundRect(76, 16, 24, 28, 8, SSD1306_WHITE);
+            display.fillCircle(40, 30, 4, SSD1306_BLACK);
+            display.fillCircle(88, 30, 4, SSD1306_BLACK);
+            display.fillRoundRect(54, 38, 20, 8, 3, SSD1306_WHITE);
+            display.setTextSize(1);
+            display.setTextColor(SSD1306_WHITE);
+            display.setCursor(40, 54);
+            display.print("SPEAKING");
+            break;
+
+        case UI_ERROR:
+            // Confused / sad eyes with slanted brows
+            display.fillRoundRect(28, 26, 24, 16, 6, SSD1306_WHITE);
+            display.fillRoundRect(76, 26, 24, 16, 6, SSD1306_WHITE);
+            display.fillCircle(38, 34, 3, SSD1306_BLACK);
+            display.fillCircle(90, 34, 3, SSD1306_BLACK);
+            display.drawLine(26, 22, 54, 27, SSD1306_WHITE);
+            display.drawLine(74, 27, 102, 22, SSD1306_WHITE);
+            display.setTextSize(1);
+            display.setTextColor(SSD1306_WHITE);
+            display.setCursor(48, 54);
+            display.print("ERROR");
+            break;
+    }
+
+    display.display();
+}
+
+void applyAssistantState(const String &cmd)
+{
+    if (cmd == "STATE_IDLE")
+    {
+        currentUIState = UI_IDLE;
+        currentMood = CALM;
+        eyeOffsetX = 0;
+        eyeOffsetY = 0;
+        drawStateFace(UI_IDLE);
+    }
+    else if (cmd == "STATE_LISTENING")
+    {
+        currentUIState = UI_LISTENING;
+        drawStateFace(UI_LISTENING);
+    }
+    else if (cmd == "STATE_TRANSCRIBING")
+    {
+        currentUIState = UI_TRANSCRIBING;
+        drawStateFace(UI_TRANSCRIBING);
+    }
+    else if (cmd == "STATE_THINKING")
+    {
+        currentUIState = UI_THINKING;
+        drawStateFace(UI_THINKING);
+    }
+    else if (cmd == "STATE_EXECUTING")
+    {
+        currentUIState = UI_EXECUTING;
+        drawStateFace(UI_EXECUTING);
+    }
+    else if (cmd == "STATE_SPEAKING")
+    {
+        currentUIState = UI_SPEAKING;
+        drawStateFace(UI_SPEAKING);
+    }
+    else if (cmd == "STATE_FOLLOW_UP")
+    {
+        currentUIState = UI_LISTENING;
+        drawStateFace(UI_LISTENING);
+    }
+    else if (cmd == "STATE_ERROR")
+    {
+        currentUIState = UI_ERROR;
+        drawStateFace(UI_ERROR);
+    }
+}
+
+
 void lookTo(int targetX)
 {
     while (eyeOffsetX != targetX)
@@ -259,7 +335,6 @@ void lookTo(int targetX)
             eyeOffsetX--;
 
         drawEyesOpen();
-
         delay(40);
     }
 }
@@ -271,53 +346,36 @@ void chooseBehavior()
     switch (currentMood)
     {
         case CALM:
-
             if (r < 55)
                 currentBehavior = IDLE;
-
             else if (r < 70)
                 currentBehavior = BLINK;
-
             else if (r < 82)
                 currentBehavior = LOOK_LEFT;
-
             else if (r < 94)
                 currentBehavior = LOOK_RIGHT;
-
             else
                 currentBehavior = DOUBLE_BLINK;
-
             break;
-
 
         case CURIOUS:
-
             if (r < 25)
                 currentBehavior = IDLE;
-
             else if (r < 42)
                 currentBehavior = BLINK;
-
             else if (r < 62)
                 currentBehavior = LOOK_LEFT;
-
             else if (r < 82)
                 currentBehavior = LOOK_RIGHT;
-
             else
                 currentBehavior = DOUBLE_BLINK;
-
             break;
 
-
         case SLEEPY:
-
             if (r < 78)
                 currentBehavior = IDLE;
-
             else
                 currentBehavior = BLINK;
-
             break;
     }
 }
@@ -332,26 +390,9 @@ void chooseMood()
         currentMood = CURIOUS;
     else
         currentMood = SLEEPY;
-
-    Serial.print("Current Mood: ");
-
-    switch (currentMood)
-    {
-        case CALM:
-            Serial.println("CALM");
-            break;
-
-        case CURIOUS:
-            Serial.println("CURIOUS");
-            break;
-
-        case SLEEPY:
-            Serial.println("SLEEPY");
-            break;
-    }
 }
-// ================= MICROPHONE SETUP =================
 
+// ================= MICROPHONE SETUP =================
 void setupMicrophone()
 {
     i2s_config_t i2s_config = {
@@ -398,9 +439,11 @@ void setupMicrophone()
     }
 
     microphoneReady = true;
-
     Serial.println("Microphone initialized successfully.");
 }
+
+String serialCmdBuffer = "";
+
 void recordAudio()
 {
     if (!microphoneReady)
@@ -431,8 +474,7 @@ void recordAudio()
         for (int i = 0; i < count; i++)
         {
             // Convert INMP441 32-bit I2S sample to 16-bit PCM
-            int16_t pcmSample =
-                (int16_t)(micSamples[i] >> 16);
+            int16_t pcmSample = (int16_t)(micSamples[i] >> 16);
 
             Serial.write(
                 (uint8_t *)&pcmSample,
@@ -440,48 +482,97 @@ void recordAudio()
             );
         }
 
-        // Check whether the PC requested the stream to stop.
-        if (Serial.available())
+        // Check TTP223 touch sensor
+        bool currentTouch = digitalRead(touchPin);
+        if (currentTouch && !lastTouchState && (millis() - lastTouchTime > 400))
         {
-            String command = Serial.readStringUntil('\n');
-            command.trim();
+            lastTouchTime = millis();
+            Serial.print("\nTOUCH_TRIGGER\n");
+            Serial.flush();
+        }
+        lastTouchState = currentTouch;
 
-            if (command == "STOP_STREAM")
+        // Non-blocking serial command processor
+        while (Serial.available())
+        {
+            char c = (char)Serial.read();
+            if (c == '\n' || c == '\r')
             {
-                streaming = false;
+                serialCmdBuffer.trim();
+                if (serialCmdBuffer.length() > 0)
+                {
+                    if (serialCmdBuffer == "STOP_STREAM")
+                    {
+                        streaming = false;
+                    }
+                    else if (serialCmdBuffer.startsWith("STATE_"))
+                    {
+                        applyAssistantState(serialCmdBuffer);
+                    }
+                    serialCmdBuffer = "";
+                }
+            }
+            else if (serialCmdBuffer.length() < 32)
+            {
+                serialCmdBuffer += c;
             }
         }
     }
 
     Serial.flush();
-
     Serial.println();
     Serial.println("STREAM_END");
 }
 
 void handleSerialCommand()
 {
-    if (!Serial.available())
-        return;
-
-    String command = Serial.readStringUntil('\n');
-    command.trim();
-
-    if (command == "START_STREAM")
+    while (Serial.available())
     {
-        recordAudio();
+        char c = (char)Serial.read();
+        if (c == '\n' || c == '\r')
+        {
+            serialCmdBuffer.trim();
+            if (serialCmdBuffer.length() > 0)
+            {
+                if (serialCmdBuffer == "START_STREAM")
+                {
+                    serialCmdBuffer = "";
+                    recordAudio();
+                    return;
+                }
+                else if (serialCmdBuffer.startsWith("STATE_"))
+                {
+                    applyAssistantState(serialCmdBuffer);
+                }
+                serialCmdBuffer = "";
+            }
+        }
+        else if (serialCmdBuffer.length() < 32)
+        {
+            serialCmdBuffer += c;
+        }
     }
 }
+
 // ================= SETUP =================
 void setup()
 {
     Serial.begin(921600);
 
-    pinMode(touchPin, INPUT);
+    // SILENCE SPEAKER PINS: Actively drive speaker pins LOW to eliminate amplifier crackling
+    pinMode(SPK_DOUT, OUTPUT);
+    digitalWrite(SPK_DOUT, LOW);
+    pinMode(SPK_BCLK, OUTPUT);
+    digitalWrite(SPK_BCLK, LOW);
+    pinMode(SPK_LRC, OUTPUT);
+    digitalWrite(SPK_LRC, LOW);
 
-    Serial.println("DeskBot Face Engine Started");
+    pinMode(touchPin, INPUT_PULLDOWN);
+
+    Serial.println("DeskBot Face Engine Started (Speaker Audio Disabled)");
 
     Wire.begin(8, 9);
+    Wire.setClock(400000); // 400kHz Fast I2C for non-blocking OLED rendering
 
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
     {
@@ -489,53 +580,9 @@ void setup()
     }
 
     randomSeed(micros());
-
     lastInteraction = millis();
 
-   // ================= AUDIO SETUP =================
-
-Serial.println("Initializing LittleFS...");
-
-if (!LittleFS.begin(true))
-{
-    Serial.println("LittleFS initialization FAILED!");
-
-    while (true)
-    {
-        delay(1000);
-    }
-}
-
-Serial.println("LittleFS initialized successfully.");
-
-// Create I2S audio output
-audioOutput = new AudioOutputI2S();
-
-audioOutput->SetPinout(
-    I2S_BCLK,
-    I2S_LRC,
-    I2S_DOUT
-);
-
-// Start with moderate volume
-audioOutput->SetGain(0.35);
-
-Serial.println("WAV audio initialized.");
-// ================= MICROPHONE =================
-
-setupMicrophone();
-
-
-
-// ===============================================
-
-randomSeed(micros());
-
-lastInteraction = millis();
-
-    // DeskBot welcome sound
-    startWav("/welcome.wav");
-    // ===============================================
+    setupMicrophone();
 
     drawEyesOpen();
 }
@@ -543,60 +590,45 @@ lastInteraction = millis();
 void loop()
 {
     handleSerialCommand();
-    updateAudio();
+
+    // When an active assistant state is showing, hold the face and skip idle behaviors
+    if (currentUIState != UI_IDLE)
+        return;
+
     if (currentMood == CURIOUS && millis() > curiousUntil)
     {
         currentMood = CALM;
         drawEyesOpen();
     }
 
-    if (currentMood == CALM &&
-    millis() - lastInteraction > 30000)
+    if (currentMood == CALM && millis() - lastInteraction > 30000)
     {
         currentMood = SLEEPY;
-
         drawEyesOpen();
-
-        startWav("/sleepy.wav");
     }
 
     bool currentTouch = digitalRead(touchPin);
 
     // ================= TOUCH =================
-
-    if (currentTouch && !lastTouchState)
+    if (currentTouch && !lastTouchState && (millis() - lastTouchTime > 400))
     {
-        Serial.println("Touch detected!");
-
+        lastTouchTime = millis();
+        Serial.print("\nTOUCH_TRIGGER\n");
+        Serial.flush();
         lastInteraction = millis();
-
         curiousUntil = millis() + 5000;
 
-    // If DeskBot was sleeping, play wake sound
         if (currentMood == SLEEPY)
         {
             currentMood = CURIOUS;
-
             drawEyesOpen();
-
-            startWav("/wake.wav");
         }
         else
         {
-        // Normal touch response
-            //startWav("/touch.wav");
-
             currentMood = CURIOUS;
-
             drawEyesOpen();
-
-        // Curious reaction
-            startWav("/touch.wav");
         }
-}
-
-    // ==========================================
-
+    }
     lastTouchState = currentTouch;
 
     if (millis() < nextBehaviorTime)
@@ -608,70 +640,39 @@ void loop()
     {
         case IDLE:
             lookTo(0);
-
-    // Stay idle for a natural random period
             nextBehaviorTime = millis() + random(2500, 7000);
-
             break;
 
         case LOOK_LEFT:
-
             lookTo(-4);
-
-            delay(random(250,500));
-
+            delay(random(250, 500));
             lookTo(0);
-
-            nextBehaviorTime =
-                millis() + random(2000, 5000);
-
+            nextBehaviorTime = millis() + random(2000, 5000);
             break;
 
         case LOOK_RIGHT:
-
             lookTo(4);
-
-            delay(random(250,500));
-
+            delay(random(250, 500));
             lookTo(0);
-
-            nextBehaviorTime =
-                millis() + random(2000, 5000);
-
+            nextBehaviorTime = millis() + random(2000, 5000);
             break;
 
         case BLINK:
-
             drawEyesClosed();
-
-            delay(random(80,140));
-
+            delay(random(80, 140));
             drawEyesOpen();
-
-            nextBehaviorTime =
-                millis() + random(3000, 7000);
-
+            nextBehaviorTime = millis() + random(3000, 7000);
             break;
 
         case DOUBLE_BLINK:
-
             drawEyesClosed();
-
-            delay(random(80,120));
-
+            delay(random(80, 120));
             drawEyesOpen();
-
-            delay(random(100,180));
-
+            delay(random(100, 180));
             drawEyesClosed();
-
-            delay(random(80,120));
-
+            delay(random(80, 120));
             drawEyesOpen();
-
-            nextBehaviorTime =
-                millis() + random(5000, 9000);
-
+            nextBehaviorTime = millis() + random(5000, 9000);
             break;
     }
 }
