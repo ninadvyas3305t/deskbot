@@ -44,6 +44,44 @@ class TestFileTools(unittest.TestCase):
         self.assertEqual(target, "simple_file.py")
         self.assertIsNone(loc)
 
+        # Spoken phrasing: 'in documents folder named as NEDS'
+        target, loc = file_tools.parse_location_spec("in documents folder named as NEDS")
+        self.assertEqual(target, "NEDS")
+        self.assertEqual(loc, "documents")
+
+        # Spoken phrasing: 'in documents folder called NEDS'
+        target, loc = file_tools.parse_location_spec("in documents folder called NEDS")
+        self.assertEqual(target, "NEDS")
+        self.assertEqual(loc, "documents")
+
+        # Standalone 'folder named as NEDS'
+        target, loc = file_tools.parse_location_spec("folder named as NEDS")
+        self.assertEqual(target, "NEDS")
+        self.assertIsNone(loc)
+
+    def test_folder_intent_and_contextual_matching(self):
+        # 'can you create a file in documents folder named as NEDS?'
+        intent1 = ai_brain.fast_intent_match("can you create a file in documents folder named as NEDS?")
+        self.assertIsNotNone(intent1)
+        self.assertEqual(intent1["action"], "create_file")
+
+        # 'Can you open that folder for me to see?'
+        intent2 = ai_brain.fast_intent_match("Can you open that folder for me to see?")
+        self.assertIsNotNone(intent2)
+        self.assertEqual(intent2["action"], "open_folder")
+        self.assertEqual(intent2["query"], "that folder")
+
+        # 'Can you open the folder, You created named Nets.'
+        intent3 = ai_brain.fast_intent_match("Can you open the folder, You created named Nets.")
+        self.assertIsNotNone(intent3)
+        self.assertEqual(intent3["action"], "open_folder")
+
+        # 'open documents folder'
+        intent4 = ai_brain.fast_intent_match("open documents folder")
+        self.assertIsNotNone(intent4)
+        self.assertEqual(intent4["action"], "open_folder")
+        self.assertEqual(intent4["query"], "documents")
+
     def test_find_file_in_workspace(self):
         # main.py and ai_brain.py exist in workspace
         p = file_tools.find_file_in_workspace("main.py")

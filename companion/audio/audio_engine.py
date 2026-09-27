@@ -122,7 +122,10 @@ class AudioEngine:
                     pass
                 last_retry = time.monotonic()
 
-        raise RuntimeError(f"Timed out waiting for STREAM_START from ESP32 on {self.port}.")
+        raise RuntimeError(
+            f"Timed out waiting for STREAM_START from ESP32 on {self.port}.\n"
+            "  -> Hint: If your computer went to sleep or the board froze, press the physical 'RST' button on the ESP32 or reconnect the USB cable."
+        )
 
     def _reader_loop(self) -> None:
         """Background thread continuously pumping PCM bytes from serial into RingBuffer and frame queue."""
@@ -230,13 +233,7 @@ class AudioEngine:
             return b""
 
     def drain_frames(self) -> None:
-        """Drain any frames currently in the queue, serial input buffer, and partial chunk buffer."""
-        with self._lock:
-            if self._ser and self._ser.is_open:
-                try:
-                    self._ser.reset_input_buffer()
-                except Exception:
-                    pass
+        """Drain any frames currently in the queue, ring buffer, and partial chunk buffer."""
         self._chunk_buffer.clear()
         while not self._frame_queue.empty():
             try:

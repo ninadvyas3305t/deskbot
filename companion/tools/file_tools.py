@@ -306,38 +306,146 @@ def resolve_file_candidate(
     return ResolvedFileTarget(target_name, candidates=unique_cands, search_dir=chosen_dir)
 
 
+def _clean_target_name(target: str) -> str:
+    """Strip extraneous spoken filler and wrappers from filename/folder target."""
+    t = target.strip().strip(".,?!;:`'\"")
+    changed = True
+    while changed:
+        before = t
+        t = re.sub(r"^(?:a\s+)?(?:file|folder|directory)\s+", "", t, flags=re.IGNORECASE).strip()
+        t = re.sub(r"^(?:called\s+(?:as\s+)?|named\s+(?:as\s+)?|with\s+(?:the\s+)?name\s+(?:of\s+)?|as\s+)", "", t, flags=re.IGNORECASE).strip()
+        t = re.sub(r"\b(?:for\s+me(?:\s+to\s+see)?|to\s+see|please)\b", "", t, flags=re.IGNORECASE).strip()
+        t = t.strip(".,?!;:`'\"")
+        changed = (t != before)
+    return t
+
+
+_LAST_CREATED_PATH: Optional[Path] = None
+
+
+def get_last_created_path() -> Optional[Path]:
+    """Return the most recently created file or directory path."""
+    return _LAST_CREATED_PATH
+
+
+def set_last_created_path(p: Path | str | None) -> None:
+    """Record the most recently created file or directory path."""
+    global _LAST_CREATED_PATH
+    _LAST_CREATED_PATH = Path(p) if p else None
+
+
+def cleanup_legacy_named_folder(dir_name: str = "documents") -> None:
+    """Safely migrate any previously misnamed 'folder named as NEDS' to 'NEDS'."""
+    try:
+        parent = STANDARD_DIRECTORIES.get(dir_name)
+        if parent and parent.is_dir():
+            bad_path = parent / "folder named as NEDS"
+            good_path = parent / "NEDS"
+            if bad_path.exists():
+                if not good_path.exists():
+                    bad_path.rename(good_path)
+                    set_last_created_path(good_path)
+                else:
+                    if bad_path.is_file():
+                        bad_path.unlink()
+    except Exception as e:
+        logger.debug("Cleanup legacy misnamed folder error: %s", e)
+
+
+def find_folder_in_standard_directories(folder_name: str) -> Optional[Path]:
+    """Search for a directory across standard directories (Documents, Desktop, Downloads, Projects, Workspace)."""
+    clean_target = folder_name.strip().lower()
+    if not clean_target:
+        return None
+
+    search_roots = [
+        STANDARD_DIRECTORIES["documents"],
+        STANDARD_DIRECTORIES["desktop"],
+        STANDARD_DIRECTORIES["downloads"],
+        STANDARD_DIRECTORIES["projects"],
+        config.WORKSPACE_ROOT,
+    ]
+
+    # 1. Exact case-insensitive match
+    for root in search_roots:
+        if not root.is_dir():
+            continue
+        try:
+            for entry in root.iterdir():
+                if entry.is_dir() and entry.name.lower() == clean_target:
+                    return entry
+        except Exception:
+            pass
+
+    # 2. Check phonetic / fuzzy match (e.g. "nets" vs "neds")
+    best_cand: Optional[Path] = None
+    best_score = 0.0
+
+    for root in search_roots:
+        if not root.is_dir():
+            continue
+        try:
+            for entry in root.iterdir():
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+                cand_name = entry.name.lower()
+                ratio = difflib.SequenceMatcher(None, clean_target, cand_name).ratio()
+                dist = _levenshtein_distance(clean_target, cand_name)
+
+                # Homophone / acoustic confusion (e.g. Nets <-> NEDS)
+                if (clean_target, cand_name) in {("nets", "neds"), ("neds", "nets"), ("net", "ned")}:
+                    ratio = max(ratio, 0.95)
+
+                if dist <= 1:
+                    ratio = max(ratio, 0.85)
+
+                if ratio > best_score and ratio >= 0.75:
+                    best_score = ratio
+                    best_cand = entry
+        except Exception:
+            pass
+
+    return best_cand
+
+
 def parse_location_spec(spec: str) -> Tuple[str, Optional[str]]:
     """Parse phrases like:
     - 'notes.txt on my Desktop'
-    - 'on my desktop named notes.txt'
-    - 'on my desktop called notes.txt'
-    - 'in downloads called report.pdf'
-    - 'on desktop notes.txt'
+    - 'in documents folder named as NEDS'
+    - 'a folder called Test inside Documents'
+    - 'simple_file.py'
 
     Returns (target_name, location_hint).
     """
     clean = normalize_spoken_filename(spec)
-    clean = re.sub(r"^(?:a\s+file\s+called|a\s+folder\s+called|file\s+called|folder\s+called|file|folder)\s+", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"^(?:called|named)\s+", "", clean, flags=re.IGNORECASE).strip()
 
-    # Pattern 1: Location first - "(?:on|in|inside)(?: my)? <location> (?:called |named )?<target>"
-    m_loc_first = re.search(r"^(?:on|in|inside)(?:\s+my)?\s+([a-zA-Z0-9_\-]+)\s+(?:called\s+|named\s+)?(.+)$", clean, flags=re.IGNORECASE)
+    # Pattern 1: Location first - "(?:on|in|inside)(?: my)? <location>(?: folder| directory)? (?:called |named |named as )?<target>"
+    m_loc_first = re.search(
+        r"^(?:on|in|inside)(?:\s+my)?\s+([a-zA-Z0-9_\-]+)(?:\s+(?:folder|directory))?\s+(?:called\s+(?:as\s+)?|named\s+(?:as\s+)?|with\s+(?:the\s+)?name\s+(?:of\s+)?|as\s+)?(.+)$",
+        clean,
+        flags=re.IGNORECASE,
+    )
     if m_loc_first:
         loc_cand = m_loc_first.group(1).strip().lower()
         if loc_cand in STANDARD_DIRECTORIES:
-            target = m_loc_first.group(2).strip()
-            target = re.sub(r"^(?:called|named)\s+", "", target, flags=re.IGNORECASE).strip()
+            target = _clean_target_name(m_loc_first.group(2))
             return target, loc_cand
 
-    # Pattern 2: Target first - "<target> (?:on|in|inside)(?: my)? <location>"
-    m_target_first = re.search(r"^(.*?)\s+(?:on|in|inside)(?:\s+my)?\s+([a-zA-Z0-9_\- ]+)$", clean, flags=re.IGNORECASE)
+    # Pattern 2: Target first - "<target> (?:on|in|inside)(?: my)? <location>(?: folder| directory)?"
+    m_target_first = re.search(
+        r"^(.*?)\s+(?:on|in|inside)(?:\s+my)?\s+([a-zA-Z0-9_\-]+)(?:\s+(?:folder|directory))?$",
+        clean,
+        flags=re.IGNORECASE,
+    )
     if m_target_first:
-        target = m_target_first.group(1).strip()
-        location = m_target_first.group(2).strip().lower()
-        target = re.sub(r"^(?:called|named)\s+", "", target, flags=re.IGNORECASE).strip()
-        return target, location
+        loc_cand = m_target_first.group(2).strip().lower()
+        if loc_cand in STANDARD_DIRECTORIES:
+            target = _clean_target_name(m_target_first.group(1))
+            return target, loc_cand
 
-    return clean, None
+    # Pattern 3: Standalone target
+    target_only = _clean_target_name(clean)
+    return target_only, None
 
 
 def resolve_target_path(
@@ -350,6 +458,16 @@ def resolve_target_path(
         return None
 
     raw_clean = target_spec.strip()
+
+    # 0. Check contextual reference (e.g. "that folder", "that folder for me to see", "the folder you created")
+    norm_text = re.sub(r"\b(?:for\s+me(?:\s+to\s+see)?|to\s+see|please)\b", "", raw_clean, flags=re.IGNORECASE).strip().strip(".,?!;:`'\"")
+    is_contextual = bool(re.search(r"^(?:that|the|this)\s+(?:folder|directory)(?:\s+(?:that\s+)?(?:you\s+|i\s+)?(?:just\s+)?created)?$", norm_text, flags=re.IGNORECASE) or
+                         re.search(r"^(?:the\s+)?(?:folder|directory)\s+(?:that\s+)?(?:you\s+|i\s+)?(?:just\s+)?created$", norm_text, flags=re.IGNORECASE) or
+                         norm_text.lower() in {"that folder", "this folder", "the folder", "just created"})
+    if is_contextual:
+        last = get_last_created_path()
+        if last and is_path_safe(last):
+            return last if last.is_dir() else last.parent
 
     # 1. Check if it's directly a standard folder keyword (e.g. "desktop", "downloads", "the screenshots folder")
     norm_keyword = re.sub(r"^(?:the|my)\s+", "", raw_clean.lower()).strip()
@@ -429,11 +547,19 @@ def open_file_explorer() -> ToolResult:
 
 def open_folder(folder_spec: str) -> ToolResult:
     """Open a validated folder in Windows Explorer or macOS Finder."""
+    cleanup_legacy_named_folder()
     clean = (folder_spec or "").strip()
     if not clean:
         return open_file_explorer()
 
     path = resolve_target_path(clean, allow_workspace_search=False, default_to_desktop=False)
+
+    if not path or not path.exists():
+        # Fallback: search standard directories for folder
+        target_name, loc_hint = parse_location_spec(clean)
+        found = find_folder_in_standard_directories(target_name)
+        if found:
+            path = found
 
     if not path or not path.exists():
         return ToolResult(False, f"Folder not found: {clean}", f"I couldn't find the folder '{clean}'.")
@@ -472,17 +598,24 @@ def create_file(file_spec: str, content: str = "") -> ToolResult:
             return ToolResult(False, str(err), f"Could not create directory for {target_path.name}.")
 
     if target_path.exists():
+        set_last_created_path(target_path)
         return ToolResult(True, f"File already exists: {target_path.name}", f"The file '{target_path.name}' already exists.")
 
     try:
         target_path.write_text(content, encoding="utf-8")
+        set_last_created_path(target_path)
         is_desktop = False
         try:
             is_desktop = target_parent.resolve() == STANDARD_DIRECTORIES["desktop"].resolve()
         except Exception:
             is_desktop = target_parent == STANDARD_DIRECTORIES["desktop"]
         location_desc = "on your Desktop" if is_desktop else f"in {target_parent.name}"
-        return ToolResult(True, f"Created {target_path}", f"Created {target_path.name} {location_desc}.")
+        return ToolResult(
+            True,
+            f"Created {target_path}",
+            f"Created {target_path.name} {location_desc}.",
+            data={"path": str(target_path), "name": target_path.name, "parent": str(target_parent)},
+        )
     except Exception as err:
         logger.error("Failed to create file '%s': %s", target_path, err)
         return ToolResult(False, str(err), f"Could not create {target_path.name}.")
@@ -502,17 +635,24 @@ def create_folder(folder_spec: str) -> ToolResult:
         return ToolResult(False, "Path forbidden", "Creating folders in system directories is not allowed.")
 
     if target_path.exists() and target_path.is_dir():
+        set_last_created_path(target_path)
         return ToolResult(True, f"Folder already exists: {target_path.name}", "The folder already exists.")
 
     try:
         target_path.mkdir(parents=True, exist_ok=True)
+        set_last_created_path(target_path)
         is_desktop = False
         try:
             is_desktop = target_path.parent.resolve() == STANDARD_DIRECTORIES["desktop"].resolve()
         except Exception:
             is_desktop = target_path.parent == STANDARD_DIRECTORIES["desktop"]
         location_desc = "on your Desktop" if is_desktop else f"in {target_path.parent.name}"
-        return ToolResult(True, f"Created folder {target_path}", f"Created folder {target_path.name} {location_desc}.")
+        return ToolResult(
+            True,
+            f"Created folder {target_path}",
+            f"Created folder {target_path.name} {location_desc}.",
+            data={"path": str(target_path), "name": target_path.name, "parent": str(target_path.parent)},
+        )
     except Exception as err:
         logger.error("Failed to create folder '%s': %s", target_path, err)
         return ToolResult(False, str(err), f"Could not create folder {target_path.name}.")

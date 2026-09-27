@@ -29,6 +29,11 @@ class AssistantStateMachine:
         self._on_transition_callback: Optional[Callable[[AssistantState, AssistantState], None]] = None
         self._broadcaster: Optional[Callable[[AssistantState], None]] = None
 
+    @property
+    def current_state(self) -> AssistantState:
+        """Alias property for backwards compatibility and clarity."""
+        return self.state
+
     def set_state_broadcaster(self, broadcaster: Callable[[AssistantState], None]) -> None:
         """Register a callback for hardware state sync (e.g. ESP32 OLED face)."""
         self._broadcaster = broadcaster

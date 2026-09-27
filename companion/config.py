@@ -96,8 +96,8 @@ CHANNELS = 1
 
 # --- Wake Word Detection (openWakeWord) ---
 DEFAULT_WAKE_MODEL = os.getenv("DESKBOT_WAKE_MODEL", "hey_jarvis")
-DEFAULT_WAKE_THRESHOLD = float(os.getenv("DESKBOT_WAKE_THRESHOLD", "0.45"))
-DEFAULT_MIC_GAIN = float(os.getenv("DESKBOT_MIC_GAIN", "1.5"))
+DEFAULT_WAKE_THRESHOLD = float(os.getenv("DESKBOT_WAKE_THRESHOLD", "0.55"))
+DEFAULT_MIC_GAIN = float(os.getenv("DESKBOT_MIC_GAIN", "1.2"))
 
 # --- Speech-to-Text (Faster-Whisper) ---
 DEFAULT_STT_MODEL = os.getenv("DESKBOT_STT_MODEL", "base")

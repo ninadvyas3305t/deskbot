@@ -66,6 +66,10 @@ def run_assistant(
     print("Loading wake-word model...", flush=True)
     wake_detector, label = create_model(wake_model)
 
+    _baseline_feature_buffer: Optional[np.ndarray] = None
+    if hasattr(wake_detector, "preprocessor") and hasattr(wake_detector.preprocessor, "feature_buffer"):
+        _baseline_feature_buffer = wake_detector.preprocessor.feature_buffer.copy()
+
     get_whisper_model(stt_model)
 
     print(f"DeskBot ready. Listening for {wake_model}.", flush=True)
@@ -119,29 +123,30 @@ def run_assistant(
     idle_cooldown_until = 0.0
 
     def reset_wake_scores() -> None:
-        """Fully reset openWakeWord predictions and internal preprocessor feature buffers to eliminate residual ghost detections."""
+        """Reset openWakeWord to clean baseline state, eliminating residual ghost detections without causing deafness."""
         nonlocal consecutive_wake_hits
         consecutive_wake_hits = 0
         wake_pcm_buffer.clear()
-        if hasattr(wake_detector, "prediction_buffer") and label in wake_detector.prediction_buffer:
-            wake_detector.prediction_buffer[label].clear()
-            for _ in range(5):
-                wake_detector.prediction_buffer[label].append(0.0)
+        if hasattr(wake_detector, "prediction_buffer"):
+            wake_detector.prediction_buffer.clear()
         if hasattr(wake_detector, "preprocessor"):
             prep = wake_detector.preprocessor
             if hasattr(prep, "raw_data_buffer"):
                 prep.raw_data_buffer.clear()
             if hasattr(prep, "melspectrogram_buffer"):
-                prep.melspectrogram_buffer = np.zeros((76, 32), dtype=np.float32)
-            prep.accumulated_samples = 0
-            prep.raw_data_remainder = np.empty(0)
-            if hasattr(prep, "feature_buffer"):
-                prep.feature_buffer = np.zeros((41, 96), dtype=np.float32)
+                prep.melspectrogram_buffer = np.ones((76, 32))
+            if hasattr(prep, "accumulated_samples"):
+                prep.accumulated_samples = 0
+            if hasattr(prep, "raw_data_remainder"):
+                prep.raw_data_remainder = np.empty(0)
+            if _baseline_feature_buffer is not None:
+                prep.feature_buffer = _baseline_feature_buffer.copy()
 
-    def enter_idle(cooldown_seconds: float = 0.6) -> None:
+    def enter_idle(cooldown_seconds: float = 0.4, force_log: bool = False) -> None:
         """Transition cleanly to IDLE with full buffer flushing and an acoustic refractory cooldown."""
         nonlocal idle_cooldown_until
-        state_machine.transition_to(AssistantState.IDLE)
+        if state_machine.current_state != AssistantState.IDLE or force_log:
+            state_machine.transition_to(AssistantState.IDLE)
         audio_engine.drain_frames()
         audio_engine.clear_touch()
         reset_wake_scores()
@@ -156,7 +161,7 @@ def run_assistant(
             speak(text, block=True)
         except Exception as tts_err:
             logger.warning("TTS speech error: %s", tts_err)
-        time.sleep(0.35)
+        time.sleep(0.3)
         audio_engine.drain_frames()
         audio_engine.clear_touch()
         if hasattr(audio_engine.ring_buffer, "clear"):
@@ -449,7 +454,7 @@ def run_assistant(
         enter_idle()
         return True
 
-    enter_idle()
+    enter_idle(cooldown_seconds=0.8, force_log=True)
 
     try:
         while True:
@@ -522,15 +527,15 @@ def run_assistant(
                     logger.debug("Wake candidate score: %.2f (amp: %d, thresh: %.2f)", score, max_amp, wake_threshold)
 
                 # Responsive & reliable wake trigger:
-                # 1. Trigger immediately on strong confidence (score >= wake_threshold) with audible voice energy (amp >= 200).
-                # 2. Or trigger on sustained near-threshold confidence (score >= wake_threshold * 0.80) across 2 chunks.
-                if max_amp >= 200:
+                # 1. Trigger immediately on strong confidence (score >= wake_threshold) with audible voice energy (amp >= 250).
+                # 2. Or trigger on sustained near-threshold confidence (score >= wake_threshold * 0.85) across 2 chunks.
+                if max_amp >= 250:
                     if score >= wake_threshold:
                         detected = True
                         detected_score = score
                         consecutive_wake_hits = 0
                         break
-                    elif score >= (wake_threshold * 0.80):
+                    elif score >= (wake_threshold * 0.85):
                         consecutive_wake_hits += 1
                         if consecutive_wake_hits >= 2:
                             detected = True

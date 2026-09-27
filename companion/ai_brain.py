@@ -433,6 +433,34 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
         if folder_match:
             return {"action": "open_folder", "query": folder_match.group(1)}
 
+        # Contextual folder reference: "open that folder for me to see", "open that folder", "open the folder you created"
+        if re.search(r"\b(?:that|this|the\s+created|the\s+one\s+you\s+created)\s+(?:folder|directory)\b", cleaned_speech) or \
+           re.search(r"\b(?:folder|directory)\s+(?:that\s+)?(?:you\s+|i\s+)?(?:just\s+)?created\b", cleaned_speech):
+            return {"action": "open_folder", "query": "that folder"}
+
+        # Specific named folder: "open the folder called X", "open folder named X", "open folder X"
+        named_folder_match = re.search(
+            r"\b(?:open|show|explore|view|browse)\s+(?:the\s+)?(?:folder|directory)\s+(?:called\s+(?:as\s+)?|named\s+(?:as\s+)?|with\s+(?:the\s+)?name\s+(?:of\s+)?|as\s+)?(.+)",
+            orig_speech,
+            flags=re.IGNORECASE,
+        )
+        if named_folder_match:
+            cand_name = named_folder_match.group(1).strip()
+            # Clean conversational filler: "for me to see", "for me", "to see", "please"
+            cand_name = re.sub(r"\b(?:for\s+me(?:\s+to\s+see)?|to\s+see|please)\b", "", cand_name, flags=re.IGNORECASE).strip()
+            cand_name = re.sub(r"^(?:called\s+(?:as\s+)?|named\s+(?:as\s+)?|as\s+)", "", cand_name, flags=re.IGNORECASE).strip()
+            cand_name = cand_name.strip(".,?!;:`'\"")
+            if cand_name and not any(cand_name.lower().startswith(k) for k in ("app", "website", "youtube", "spotify")):
+                return {"action": "open_folder", "query": cand_name}
+
+        # "<name> folder/directory": "open documents folder", "open NEDS folder"
+        suffix_folder_match = re.search(r"\b(?:open|show|explore|view|browse)\s+(?:the\s+)?(.+?)\s+(?:folder|directory)\b", orig_speech, flags=re.IGNORECASE)
+        if suffix_folder_match:
+            cand_name = suffix_folder_match.group(1).strip()
+            cand_name = re.sub(r"^(?:the|my)\s+", "", cand_name, flags=re.IGNORECASE).strip()
+            if cand_name and not any(cand_name.lower().startswith(k) for k in ("app", "website")):
+                return {"action": "open_folder", "query": cand_name}
+
     # Rule 0C: Volume / Audio Controls
     if re.search(r"\b(?:unmute|un-mute)\b", cleaned_speech):
         return {"action": "unmute"}
@@ -573,6 +601,9 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
         target = re.sub(r"^(?:open|launch|start|run)(?:\s+up)?\s+", "", cleaned_speech).strip()
         target = re.sub(r"^(?:the\s+)?", "", target).strip()
         target = re.sub(r"\s+app(?:lication)?$", "", target).strip()
+        # Guard: Never treat folders, directories, files, or documents as applications!
+        if re.search(r"\b(?:folder|directory|file|documents?)\b", target, flags=re.IGNORECASE):
+            return None
         if target in {"spotify"}:
             return {"action": "spotify_open"}
         if target in {"youtube", "yt", "google"}:
