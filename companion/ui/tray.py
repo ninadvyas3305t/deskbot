@@ -12,14 +12,14 @@ from PIL import Image
 
 try:
     from assistant.lifecycle import AppLifecycleState, get_lifecycle_manager
-    from platform.autostart import is_autostart_enabled, is_autostart_supported, set_autostart
-    from platform.config_manager import get_config_manager
-    from platform.logger import open_log_file
+    from platform_layer.autostart import is_autostart_enabled, is_autostart_supported, set_autostart
+    from platform_layer.config_manager import get_config_manager
+    from platform_layer.logger import open_log_file
 except (ImportError, ModuleNotFoundError):
     from companion.assistant.lifecycle import AppLifecycleState, get_lifecycle_manager
-    from companion.platform.autostart import is_autostart_enabled, is_autostart_supported, set_autostart
-    from companion.platform.config_manager import get_config_manager
-    from companion.platform.logger import open_log_file
+    from companion.platform_layer.autostart import is_autostart_enabled, is_autostart_supported, set_autostart
+    from companion.platform_layer.config_manager import get_config_manager
+    from companion.platform_layer.logger import open_log_file
 
 from .about_dialog import show_about_dialog
 from .icon import create_tray_icon_image
@@ -123,6 +123,18 @@ class DeskBotTray:
             except Exception:
                 pass
         sys.exit(0)
+
+    def run(self) -> None:
+        """Start the system tray icon on the main thread (blocking Cocoa/Windows event loop)."""
+        img = create_tray_icon_image("ready")
+        self._icon = pystray.Icon(
+            name="DeskBot",
+            icon=img,
+            title="DeskBot: Initializing...",
+            menu=self._build_menu(),
+        )
+        logger.info("[APP] System Tray / Menu Bar icon running on main loop")
+        self._icon.run()
 
     def start(self) -> None:
         """Start the system tray icon in detached non-blocking background thread."""

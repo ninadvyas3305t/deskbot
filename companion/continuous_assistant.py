@@ -468,7 +468,7 @@ def run_assistant(
         enter_idle()
         return True
 
-    enter_idle(cooldown_seconds=0.8, force_log=True)
+    enter_idle(cooldown_seconds=0.35, force_log=True)
 
     try:
         while not (stop_event and stop_event.is_set()):
@@ -541,9 +541,9 @@ def run_assistant(
                     logger.debug("Wake candidate score: %.2f (amp: %d, thresh: %.2f)", score, max_amp, wake_threshold)
 
                 # Responsive & reliable wake trigger:
-                # 1. Trigger immediately on strong confidence (score >= wake_threshold) with audible voice energy (amp >= 250).
+                # 1. Trigger immediately on strong confidence (score >= wake_threshold) with audible voice energy (amp >= 120).
                 # 2. Or trigger on sustained near-threshold confidence (score >= wake_threshold * 0.85) across 2 chunks.
-                if max_amp >= 250:
+                if max_amp >= 120:
                     if score >= wake_threshold:
                         detected = True
                         detected_score = score

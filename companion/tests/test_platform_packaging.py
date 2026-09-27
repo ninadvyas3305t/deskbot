@@ -20,9 +20,9 @@ from companion.assistant.lifecycle import (
 )
 from companion.device.deskbot_device import DeskBotDevice
 from companion.device.discovery import is_candidate_port, scan_candidate_ports
-from companion.platform.config_manager import ConfigManager
-from companion.platform.credentials import CredentialStore
-from companion.platform.paths import (
+from companion.platform_layer.config_manager import ConfigManager
+from companion.platform_layer.credentials import CredentialStore
+from companion.platform_layer.paths import (
     get_app_data_dir,
     get_cache_dir,
     get_config_path,
@@ -30,7 +30,7 @@ from companion.platform.paths import (
     get_log_file_path,
     get_model_cache_dir,
 )
-from companion.platform.permissions import (
+from companion.platform_layer.permissions import (
     check_microphone_permission,
     check_screen_recording_permission,
 )

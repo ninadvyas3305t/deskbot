@@ -37,26 +37,3 @@ __all__ = [
     "open_log_file",
 ]
 
-# Transparent fallback to Python's standard library platform module
-# in case this package is imported as top-level 'platform' via sys.path.
-import sysconfig
-import importlib.util
-
-_stdlib_platform = None
-
-def __getattr__(name: str):
-    global _stdlib_platform
-    if _stdlib_platform is None:
-        try:
-            stdlib_dir = sysconfig.get_path("stdlib")
-            spec = importlib.util.spec_from_file_location("_stdlib_platform", f"{stdlib_dir}/platform.py")
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                _stdlib_platform = mod
-        except Exception:
-            pass
-    if _stdlib_platform is not None and hasattr(_stdlib_platform, name):
-        return getattr(_stdlib_platform, name)
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-

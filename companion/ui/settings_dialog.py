@@ -8,13 +8,13 @@ from tkinter import messagebox, ttk
 from typing import Callable, Optional
 
 try:
-    from platform.autostart import is_autostart_enabled, is_autostart_supported, set_autostart
-    from platform.config_manager import get_config_manager
-    from platform.credentials import get_credential_store
+    from platform_layer.autostart import is_autostart_enabled, is_autostart_supported, set_autostart
+    from platform_layer.config_manager import get_config_manager
+    from platform_layer.credentials import get_credential_store
 except (ImportError, ModuleNotFoundError):
-    from companion.platform.autostart import is_autostart_enabled, is_autostart_supported, set_autostart
-    from companion.platform.config_manager import get_config_manager
-    from companion.platform.credentials import get_credential_store
+    from companion.platform_layer.autostart import is_autostart_enabled, is_autostart_supported, set_autostart
+    from companion.platform_layer.config_manager import get_config_manager
+    from companion.platform_layer.credentials import get_credential_store
 
 
 class SettingsDialog:

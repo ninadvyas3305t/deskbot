@@ -25,7 +25,9 @@ companion/models/
 
 # Distribution and packaging build outputs
 dist/
-build/*/
+build/DeskBot/
+build/deskbot/
+build/deskbot-macos/
 *.dmg
 *.exe
 

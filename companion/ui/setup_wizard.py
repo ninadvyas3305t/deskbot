@@ -9,14 +9,14 @@ from typing import Optional
 
 try:
     from device.discovery import scan_candidate_ports
-    from platform.config_manager import get_config_manager
-    from platform.credentials import get_credential_store
-    from platform.permissions import check_microphone_permission
+    from platform_layer.config_manager import get_config_manager
+    from platform_layer.credentials import get_credential_store
+    from platform_layer.permissions import check_microphone_permission
 except (ImportError, ModuleNotFoundError):
     from companion.device.discovery import scan_candidate_ports
-    from companion.platform.config_manager import get_config_manager
-    from companion.platform.credentials import get_credential_store
-    from companion.platform.permissions import check_microphone_permission
+    from companion.platform_layer.config_manager import get_config_manager
+    from companion.platform_layer.credentials import get_credential_store
+    from companion.platform_layer.permissions import check_microphone_permission
 
 
 class SetupWizard:
@@ -182,7 +182,14 @@ class SetupWizard:
         self.cred_store.set_api_key(key)
         self.config_mgr.set("first_run_completed", True)
 
-        self.root.destroy()
+        try:
+            self.root.withdraw()
+            self.root.update_idletasks()
+            self.root.quit()
+            self.root.destroy()
+        except Exception:
+            pass
+
         if self.on_complete:
             try:
                 self.on_complete()
@@ -202,4 +209,10 @@ def maybe_run_first_time_setup() -> bool:
     # Run onboarding wizard
     wizard = SetupWizard()
     wizard.root.mainloop()
+    try:
+        wizard.root.withdraw()
+        wizard.root.destroy()
+    except Exception:
+        pass
     return cred_store.has_api_key()
+

@@ -36,7 +36,11 @@ fi
 rm -rf build/DeskBot dist/DeskBot dist/DeskBot.app dist/*.dmg
 
 echo "[1/3] Packaging application bundle with PyInstaller..."
-pyinstaller --clean -y build/deskbot-macos.spec
+PYINSTALLER_BIN="pyinstaller"
+if [ -f ".venv/bin/pyinstaller" ]; then
+    PYINSTALLER_BIN=".venv/bin/pyinstaller"
+fi
+"${PYINSTALLER_BIN}" --clean -y build/deskbot-macos.spec
 
 if [ ! -d "dist/DeskBot.app" ]; then
     echo "ERROR: dist/DeskBot.app was not created!"

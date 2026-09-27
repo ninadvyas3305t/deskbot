@@ -28,13 +28,22 @@ if str(COMPANION_DIR) not in sys.path:
 import config
 from assistant.lifecycle import AppLifecycleState, get_lifecycle_manager
 from continuous_assistant import run_assistant
-from platform.config_manager import get_config_manager
-from platform.credentials import get_credential_store
-from platform.logger import setup_logging
-from platform.permissions import (
-    check_microphone_permission,
-    check_screen_recording_permission,
-)
+try:
+    from platform_layer.config_manager import get_config_manager
+    from platform_layer.credentials import get_credential_store
+    from platform_layer.logger import setup_logging
+    from platform_layer.permissions import (
+        check_microphone_permission,
+        check_screen_recording_permission,
+    )
+except (ImportError, ModuleNotFoundError):
+    from companion.platform_layer.config_manager import get_config_manager
+    from companion.platform_layer.credentials import get_credential_store
+    from companion.platform_layer.logger import setup_logging
+    from companion.platform_layer.permissions import (
+        check_microphone_permission,
+        check_screen_recording_permission,
+    )
 from ui.setup_wizard import SetupWizard, maybe_run_first_time_setup
 from ui.tray import DeskBotTray
 
@@ -163,9 +172,8 @@ def main() -> int:
     if not args.cli:
         try:
             tray = DeskBotTray(on_quit_callback=request_shutdown)
-            tray.start()
         except Exception as tray_err:
-            logger.warning("[APP] Could not start system tray: %s. Continuing in console mode.", tray_err)
+            logger.warning("[APP] Could not initialize system tray: %s.", tray_err)
             tray = None
 
     # Register OS signal handlers for graceful termination
@@ -181,18 +189,41 @@ def main() -> int:
     # 7. Run continuous assistant loop
     exit_code = 0
     try:
-        exit_code = run_assistant(
-            port=port,
-            baud=baud,
-            wake_model=wake_model,
-            wake_threshold=wake_threshold,
-            stt_model=stt_model,
-            mic_gain=args.mic_gain,
-            run_once=args.once,
-            debug=args.debug,
-            wait_for_device=True,
-            stop_event=stop_event,
-        )
+        if args.cli or args.once or tray is None:
+            exit_code = run_assistant(
+                port=port,
+                baud=baud,
+                wake_model=wake_model,
+                wake_threshold=wake_threshold,
+                stt_model=stt_model,
+                mic_gain=args.mic_gain,
+                run_once=args.once,
+                debug=args.debug,
+                wait_for_device=True,
+                stop_event=stop_event,
+            )
+        else:
+            assistant_thread = threading.Thread(
+                target=run_assistant,
+                kwargs=dict(
+                    port=port,
+                    baud=baud,
+                    wake_model=wake_model,
+                    wake_threshold=wake_threshold,
+                    stt_model=stt_model,
+                    mic_gain=args.mic_gain,
+                    run_once=args.once,
+                    debug=args.debug,
+                    wait_for_device=True,
+                    stop_event=stop_event,
+                ),
+                name="DeskBotAssistantWorker",
+                daemon=True,
+            )
+            assistant_thread.start()
+
+            # Run system tray event loop on the main thread (required by macOS AppKit)
+            tray.run()
     except KeyboardInterrupt:
         logger.info("[APP] Keyboard interrupt received.")
     except Exception as err:
