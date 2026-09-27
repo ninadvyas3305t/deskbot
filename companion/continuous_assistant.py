@@ -245,6 +245,16 @@ def run_assistant(
                 )
                 spoken_response = synthesized_answer
                 state_machine.on_response(spoken_response)
+            elif action == "screen_analysis":
+                # Visual Screen Intelligence & Code Understanding
+                action_desc = get_action_description(intent)
+                state_machine.on_vision_analysis(context=action_desc)
+                result = execute_intent(intent)
+                state_machine.on_tool(action, result.success, result.message)
+                spoken_response = result.response_text or result.message
+
+                if result.response_text:
+                    state_machine.on_response(result.response_text)
             else:
                 action_desc = get_action_description(intent)
                 state_machine.transition_to(AssistantState.EXECUTING, context=action_desc)
@@ -254,6 +264,7 @@ def run_assistant(
 
                 if result.response_text:
                     state_machine.on_response(result.response_text)
+
 
             # Destructive file confirmation handling
             if (

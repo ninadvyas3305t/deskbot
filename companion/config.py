@@ -127,3 +127,10 @@ TTS_VOICE = os.getenv("DESKBOT_TTS_VOICE", None)
 TTS_RATE = int(os.getenv("DESKBOT_TTS_RATE", "1"))
 TTS_VOLUME = int(os.getenv("DESKBOT_TTS_VOLUME", "100"))
 
+# --- Vision Settings (Screen Intelligence & Code Understanding) ---
+DEFAULT_VISION_MODEL = os.getenv("DESKBOT_VISION_MODEL", "meta/llama-3.2-11b-vision-instruct")
+VISION_MAX_DIMENSION = int(os.getenv("DESKBOT_VISION_MAX_DIM", "1024"))
+VISION_JPEG_QUALITY = int(os.getenv("DESKBOT_VISION_JPEG_QUALITY", "85"))
+
+
+

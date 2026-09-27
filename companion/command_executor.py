@@ -1311,7 +1311,15 @@ def _handle_rollback_patch(query: Any = None) -> ToolResult:
     return rollback_patch(str(query or ""))
 
 
+@REGISTRY.register("screen_analysis", description_fn=lambda q: f"Analyzing screen: {q or 'visual inspection'}")
+def _handle_screen_analysis(query: Any = None) -> ToolResult:
+    from vision.service import perform_screen_analysis
+    clean_q = str(query or "").strip()
+    return perform_screen_analysis(user_query=clean_q)
+
+
 @REGISTRY.register("unknown", description_fn=lambda q: "Unknown command")
+
 def _handle_unknown(query: Any) -> ToolResult:
     print("DeskBot does not know how to perform this command.")
     return ToolResult(False, "Unknown command", "DeskBot does not know how to perform this command.")

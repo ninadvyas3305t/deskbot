@@ -58,8 +58,10 @@ VALID_ACTIONS = {
     "run_tests",
     "apply_patch",
     "rollback_patch",
+    "screen_analysis",
     "unknown",
 }
+
 
 SYSTEM_PROMPT = """
 You are the intelligent command brain for DeskBot, a Windows voice assistant.
@@ -121,6 +123,14 @@ Intent Categories:
      * system_info: {"type": "TOOL_CALL", "action": "system_info"}
      * weather: {"type": "TOOL_CALL", "action": "weather", "query": "Tokyo"}
      * calculate: {"type": "TOOL_CALL", "action": "calculate", "query": "25 * 16"}
+     * screen_analysis: {"type": "TOOL_CALL", "action": "screen_analysis", "query": "What is on my screen?"}
+       - Use whenever the user asks about what is visible on screen, or asks to explain/understand visible code, tutorials, YouTube videos, PDFs, or errors:
+         * "What is on my screen?" -> {"type": "TOOL_CALL", "action": "screen_analysis", "query": "What is on my screen?"}
+         * "Explain this code" -> {"type": "TOOL_CALL", "action": "screen_analysis", "query": "Explain this code"}
+         * "What is this code doing?" -> {"type": "TOOL_CALL", "action": "screen_analysis", "query": "What is this code doing?"}
+         * "What is the guy in the video coding?" -> {"type": "TOOL_CALL", "action": "screen_analysis", "query": "What is the guy in the video coding?"}
+         * "What's wrong with this code?" -> {"type": "TOOL_CALL", "action": "screen_analysis", "query": "What's wrong with this code?"}
+
 
 4. CLARIFICATION:
    - Use only when user request is too underspecified to proceed safely:
@@ -507,9 +517,30 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
         city = weather_match.group(1)
         return {"action": "weather", "query": city.strip().title() if city else None}
 
-    # Rule DEV-WINDOW: Active window / Screen understanding
-    if re.search(r"\b(?:what\s+(?:am\s+i|are\s+we)\s+looking\s+at|look\s+at\s+my\s+screen|inspect\s+(?:my\s+)?screen|what\s+window\s+is\s+(?:active|open)|what\s+app\s+is\s+(?:active|open))\b", cleaned_speech):
+    # Rule VISION-SCREEN: Visual Screen Intelligence & Code Understanding
+    if re.search(r"\b(?:what(?:\s*is|'s)\s+(?:on|visible\s+on)\s+(?:my\s+|the\s+)?screen|look\s+at\s+my\s+screen|inspect\s+(?:my\s+)?screen|examine\s+(?:my\s+)?screen|read\s+(?:my\s+|what's\s+on\s+my\s+)?screen|what\s+do\s+you\s+see(?:\s+on\s+my\s+screen)?|what\s+(?:am\s+i|are\s+we)\s+looking\s+at)\b", cleaned_speech):
+        return {"action": "screen_analysis", "query": orig_speech}
+
+    if re.search(r"\b(?:explain\s+(?:this\s+|the\s+)?code(?:\s+on\s+(?:my\s+)?screen)?|what\s+(?:does\s+this\s+code\s+do|is\s+this\s+code\s+doing)|what\s+code\s+is\s+this|what\s+is\s+this\s+code)\b", cleaned_speech):
+        return {"action": "screen_analysis", "query": orig_speech}
+
+    if re.search(r"\b(?:what\s+is\s+(?:the\s+)?(?:guy|person|presenter|instructor)\s+(?:in\s+the\s+video\s+)?(?:coding|doing|typing|writing|building|explaining)|what(?:'s|\s+is)\s+being\s+coded\s+in\s+this\s+video|explain\s+(?:the\s+)?video\s+code)\b", cleaned_speech):
+        return {"action": "screen_analysis", "query": orig_speech}
+
+    if re.search(r"\b(?:what(?:\s*is|'s)\s+wrong\s+with\s+this\s+code|why\s+is\s+this\s+(?:code\s+)?(?:failing|crashing|erroring|broken)|what(?:\s*is|'s)?\s+(?:(?:this|the)\s+error|error\s+(?:is\s+)?(?:this|on(?:\s+my)?\s+screen))|debug\s+(?:this\s+code|my\s+screen))\b", cleaned_speech):
+        return {"action": "screen_analysis", "query": orig_speech}
+
+
+    if re.search(r"\b(?:what\s+programming\s+language\s+is\s+this|what\s+language\s+is\s+this\s+code|what\s+language\s+is\s+this)\b", cleaned_speech):
+        return {"action": "screen_analysis", "query": orig_speech}
+
+    if re.search(r"\b(?:what\s+(?:does\s+(?:this|that)\s+function\s+do|is\s+(?:this|that)\s+function\s+doing)|explain\s+(?:this|that)\s+function)\b", cleaned_speech):
+        return {"action": "screen_analysis", "query": orig_speech}
+
+    # Rule DEV-WINDOW: Active window
+    if re.search(r"\b(?:what\s+window\s+is\s+(?:active|open)|what\s+app\s+is\s+(?:active|open)|active\s+window|active\s+app)\b", cleaned_speech):
         return {"action": "get_active_window"}
+
 
     # Rule DEV-FILE: Current file detection
     if re.search(r"\b(?:what\s+file\s+am\s+i\s+working\s+on|what\s+file\s+is\s+open|which\s+file\s+is\s+open|what\s+is\s+the\s+active\s+file|current\s+file)\b", cleaned_speech):

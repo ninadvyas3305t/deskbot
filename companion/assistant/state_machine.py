@@ -13,10 +13,12 @@ class AssistantState(str, enum.Enum):
     LISTENING = "LISTENING"
     TRANSCRIBING = "TRANSCRIBING"
     THINKING = "THINKING"
+    SCREEN_ANALYSIS = "SCREEN_ANALYSIS"
     EXECUTING = "EXECUTING"
     SPEAKING = "SPEAKING"
     FOLLOW_UP = "FOLLOW_UP"
     ERROR = "ERROR"
+
 
 
 class AssistantStateMachine:
@@ -59,6 +61,8 @@ class AssistantStateMachine:
             self.log("STT", "Transcribing...")
         elif new_state == AssistantState.THINKING:
             self.log("THINKING", context or "Processing with AI / fast intent...")
+        elif new_state == AssistantState.SCREEN_ANALYSIS:
+            self.log("VISION", context or "Analyzing screen...")
         elif new_state == AssistantState.EXECUTING:
             self.log("EXECUTING", context or "Executing command...")
         elif new_state == AssistantState.SPEAKING:
@@ -68,6 +72,7 @@ class AssistantStateMachine:
         elif new_state == AssistantState.ERROR:
             err_msg = context or "An unexpected error occurred."
             self.log("ERROR", err_msg)
+
 
         if self._broadcaster:
             try:
@@ -120,7 +125,12 @@ class AssistantStateMachine:
         """Log speech-to-text result."""
         self.log("STT", f'Recognized: "{text}"')
 
+    def on_vision_analysis(self, context: str = "Analyzing screen...") -> None:
+        """Transition to SCREEN_ANALYSIS state and log vision event."""
+        self.transition_to(AssistantState.SCREEN_ANALYSIS, context=context)
+
     def on_ai_action(self, action: str) -> None:
+
         """Log AI routing decision."""
         self.log("AI", f"Action: {action}")
 
