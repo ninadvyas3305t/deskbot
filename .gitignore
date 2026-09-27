@@ -22,3 +22,10 @@ companion/models/
 .venv/
 .DS_Store
 *.pytest_cache/
+
+# Distribution and packaging build outputs
+dist/
+build/*/
+*.dmg
+*.exe
+

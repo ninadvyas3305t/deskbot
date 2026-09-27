@@ -26,12 +26,14 @@ class AudioEngine:
         sample_width: int = 2,
         frame_bytes: int = 960,  # 30ms at 16kHz 16-bit mono
         ring_buffer_duration: float = 2.0,
+        wait_for_device: bool = False,
     ):
         self.port = port
         self.baud = baud
         self.sample_rate = sample_rate
         self.sample_width = sample_width
         self.frame_bytes = frame_bytes
+        self.wait_for_device = wait_for_device
 
         self.ring_buffer = RingBuffer.from_duration(
             duration_seconds=ring_buffer_duration,
@@ -59,8 +61,54 @@ class AudioEngine:
         if self._running:
             return
 
+        # Auto-detect port if configured as 'auto'
+        if not self.port or self.port == "auto":
+            from device.discovery import scan_candidate_ports
+            from device.handshake import probe_port
+            candidates = scan_candidate_ports()
+            found_port = None
+            for cand in candidates:
+                if probe_port(cand.device, baud=self.baud):
+                    found_port = cand.device
+                    break
+            if not found_port and candidates:
+                found_port = candidates[0].device
+            if not found_port:
+                if self.wait_for_device:
+                    try:
+                        from assistant.lifecycle import get_lifecycle_manager, AppLifecycleState
+                        get_lifecycle_manager().transition_to(
+                            AppLifecycleState.WAITING_FOR_DEVICE,
+                            "Waiting for DeskBot ESP32 via USB..."
+                        )
+                    except Exception:
+                        pass
+                    logger.info("[DEVICE] Waiting for DeskBot ESP32 hardware to be plugged in...")
+                    while not found_port:
+                        time.sleep(1.0)
+                        candidates = scan_candidate_ports()
+                        for cand in candidates:
+                            if probe_port(cand.device, baud=self.baud):
+                                found_port = cand.device
+                                break
+                else:
+                    raise RuntimeError(
+                        "No DeskBot ESP32 hardware detected. Please plug in your DeskBot via USB."
+                    )
+            self.port = found_port
+
+        try:
+            from assistant.lifecycle import get_lifecycle_manager, AppLifecycleState
+            get_lifecycle_manager().transition_to(
+                AppLifecycleState.CONNECTING,
+                f"Connecting on {self.port}"
+            )
+        except Exception:
+            pass
+
         logger.info("Opening serial port %s at %d baud...", self.port, self.baud)
         self._ser = serial.Serial(self.port, self.baud, timeout=0.5)
+
 
         # 1. Break out of any leftover recordAudio() loop on ESP32 from a prior run
         try:
@@ -208,22 +256,64 @@ class AudioEngine:
                 time.sleep(0.1)
 
     def _attempt_reconnect(self) -> None:
-        """Attempt to recover from a transient serial disconnect."""
+        """Attempt to recover from a serial disconnect with automatic candidate scanning."""
+        logger.warning("[DEVICE] DeskBot disconnected")
+        try:
+            from assistant.lifecycle import get_lifecycle_manager, AppLifecycleState
+            get_lifecycle_manager().transition_to(AppLifecycleState.DISCONNECTED, "DeskBot disconnected")
+        except Exception:
+            pass
+
         with self._lock:
-            try:
-                if self._ser:
+            if self._ser:
+                try:
+                    self._ser.close()
+                except Exception:
+                    pass
+                self._ser = None
+
+        while self._running:
+            time.sleep(1.5)
+            with self._lock:
+                from device.discovery import scan_candidate_ports
+                from device.handshake import probe_port
+                candidates = scan_candidate_ports()
+                target_port = None
+                for cand in candidates:
+                    if probe_port(cand.device, baud=self.baud):
+                        target_port = cand.device
+                        break
+
+                if target_port:
+                    logger.info("[DEVICE] DeskBot detected on %s", target_port)
+                    logger.info("[DEVICE] Handshake successful")
                     try:
-                        self._ser.close()
+                        from assistant.lifecycle import get_lifecycle_manager, AppLifecycleState
+                        get_lifecycle_manager().transition_to(AppLifecycleState.CONNECTING, f"Reconnecting to {target_port}")
                     except Exception:
                         pass
-                time.sleep(1.0)
-                self._ser = serial.Serial(self.port, self.baud, timeout=1)
-                self._ser.write(b"START_STREAM\n")
-                self._ser.flush()
-                self._wait_for_stream_start(timeout=5.0)
-                logger.info("Successfully reconnected to ESP32 on %s.", self.port)
-            except Exception as reconnect_err:
-                logger.warning("Serial reconnect attempt failed: %s", reconnect_err)
+                    try:
+                        self.port = target_port
+                        self._ser = serial.Serial(self.port, self.baud, timeout=0.5)
+                        self._ser.write(b"STOP_STREAM\n")
+                        self._ser.flush()
+                        time.sleep(0.1)
+                        self._ser.reset_input_buffer()
+                        self._ser.write(b"START_STREAM\n")
+                        self._ser.flush()
+                        self._wait_for_stream_start(timeout=5.0)
+                        logger.info("[DEVICE] Reconnected")
+                        logger.info("[DEVICE] Audio restored")
+                        try:
+                            from assistant.lifecycle import get_lifecycle_manager, AppLifecycleState
+                            get_lifecycle_manager().transition_to(AppLifecycleState.READY, f"Reconnected on {self.port}")
+                        except Exception:
+                            pass
+                        return
+
+                    except Exception as rec_err:
+                        logger.debug("Serial reconnect init failed: %s", rec_err)
+
 
     def read_frame(self, timeout: float = 1.0) -> bytes:
         """Read a single PCM frame of `self.frame_bytes`."""

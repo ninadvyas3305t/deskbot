@@ -54,6 +54,8 @@ def run_assistant(
     mic_gain: float = config.DEFAULT_MIC_GAIN,
     run_once: bool = False,
     debug: bool = False,
+    wait_for_device: bool = False,
+    stop_event: Optional[threading.Event] = None,
 ) -> int:
     """Run DeskBot continuous voice assistant loop with multi-turn active conversation."""
     if debug:
@@ -93,6 +95,7 @@ def run_assistant(
         sample_width=config.SAMPLE_WIDTH,
         frame_bytes=speech_detector.frame_bytes,
         ring_buffer_duration=2.0,
+        wait_for_device=wait_for_device,
     )
 
     # Wire ESP32 OLED state broadcaster across active serial connection
@@ -468,7 +471,7 @@ def run_assistant(
     enter_idle(cooldown_seconds=0.8, force_log=True)
 
     try:
-        while True:
+        while not (stop_event and stop_event.is_set()):
             # Check TTP223 hardware touch sensor trigger (push-to-talk from IDLE)
             if audio_engine.check_and_consume_touch():
                 state_machine.on_touch()
