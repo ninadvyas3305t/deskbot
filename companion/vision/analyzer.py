@@ -211,9 +211,25 @@ class NvidiaVisionAnalyzer(VisionAnalyzer):
     ):
         self.model = model or config.DEFAULT_VISION_MODEL
         self.api_key = api_key or os.getenv("NVIDIA_API_KEY")
+        if not self.api_key:
+            try:
+                from platform_layer.credentials import get_credential_store
+                self.api_key = get_credential_store().get_api_key()
+            except Exception:
+                try:
+                    from companion.platform_layer.credentials import get_credential_store
+                    self.api_key = get_credential_store().get_api_key()
+                except Exception:
+                    pass
         self.base_url = base_url
 
     def _create_client(self) -> OpenAI:
+        if not self.api_key:
+            try:
+                from platform_layer.credentials import get_credential_store
+                self.api_key = get_credential_store().get_api_key()
+            except Exception:
+                pass
         if not self.api_key:
             raise RuntimeError(
                 "NVIDIA_API_KEY is not set. Screen vision intelligence requires an NVIDIA API key."

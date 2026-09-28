@@ -30,8 +30,12 @@ class TestFastPathLatency(unittest.TestCase):
     def test_fast_intent_match_math(self):
         intent = ai_brain.fast_intent_match("what is 25 times 16")
         self.assertIsNotNone(intent)
-        self.assertEqual(intent["action"], "direct_answer")
-        self.assertIn("400", intent["response"])
+        self.assertIn(intent["action"], ("calculate", "direct_answer"))
+        resp_str = intent.get("response") or intent.get("query")
+        self.assertIn("400", resp_str)
+        res = command_executor.execute_intent(intent)
+        self.assertTrue(res.success)
+        self.assertIn("400", res.response_text)
 
     def test_fast_intent_match_delete(self):
         intent = ai_brain.fast_intent_match("delete notes.txt on my Desktop")

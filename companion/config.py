@@ -12,10 +12,21 @@ PROJECT_ROOT = COMPANION_DIR.parent
 
 # --- Environment Variable Auto-Loader ---
 def _load_env() -> None:
-    """Load key-value pairs from .env into os.environ if not already present."""
+    """Load key-value pairs from .env or vault into os.environ if not already present."""
+    try:
+        from platform_layer.paths import get_app_data_dir
+        vault = get_app_data_dir() / ".credential_vault"
+        if vault.is_file() and "NVIDIA_API_KEY" not in os.environ:
+            val = vault.read_text(encoding="utf-8").strip()
+            if val:
+                os.environ["NVIDIA_API_KEY"] = val
+    except Exception:
+        pass
+
     candidates = [
         PROJECT_ROOT / ".env",
         COMPANION_DIR / ".env",
+        Path.home() / ".deskbot" / ".env",
     ]
     for env_path in candidates:
         if env_path.is_file():

@@ -365,12 +365,12 @@ class TestDirectAnswerAndMathRouting(unittest.TestCase):
     def test_math_heuristic_routing(self):
         intent = ai_brain.extract_json_intent("", "What is the square root of 64?")
         self.assertIsNotNone(intent)
-        self.assertEqual(intent.get("action"), "direct_answer")
+        self.assertIn(intent.get("action"), ("calculate", "direct_answer"))
         self.assertEqual(intent.get("response"), "The square root of 64 is 8.")
 
         intent2 = ai_brain.extract_json_intent("", "What is 25 times 16?")
         self.assertIsNotNone(intent2)
-        self.assertEqual(intent2.get("action"), "direct_answer")
+        self.assertIn(intent2.get("action"), ("calculate", "direct_answer"))
         self.assertEqual(intent2.get("response"), "25 multiplied by 16 is 400.")
 
 

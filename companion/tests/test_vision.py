@@ -80,8 +80,9 @@ class TestScreenCaptureAndOptimization(unittest.TestCase):
         )
         self.assertEqual(res.data_uri, "data:image/jpeg;base64,dummy_base64")
 
+    @patch("vision.screen_capture._capture_macos_in_process", return_value=None)
     @patch("vision.screen_capture.ImageGrab")
-    def test_capture_screen_with_pillow(self, mock_image_grab):
+    def test_capture_screen_with_pillow(self, mock_image_grab, _mock_macos):
         mock_img = Image.new("RGB", (1920, 1080), color=(10, 20, 30))
         mock_image_grab.grab.return_value = mock_img
 

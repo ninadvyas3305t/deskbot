@@ -35,7 +35,7 @@ fi
 # Clean previous build artifacts
 rm -rf build/DeskBot dist/DeskBot dist/DeskBot.app dist/*.dmg
 
-echo "[1/3] Packaging application bundle with PyInstaller..."
+echo "[1/4] Packaging application bundle with PyInstaller..."
 PYINSTALLER_BIN="pyinstaller"
 if [ -f ".venv/bin/pyinstaller" ]; then
     PYINSTALLER_BIN=".venv/bin/pyinstaller"
@@ -47,7 +47,24 @@ if [ ! -d "dist/DeskBot.app" ]; then
     exit 1
 fi
 
-echo "[2/3] Preparing DMG staging directory with drag-and-drop link..."
+echo "[2/4] Applying stable Designated Requirement and Hardened Runtime signing..."
+# Use Apple Developer ID if available in environment, otherwise ad-hoc with stable designated requirement
+SIGN_IDENTITY="${CODE_SIGN_IDENTITY:--}"
+ENTITLEMENTS="build/deskbot.entitlements"
+
+echo "Signing dist/DeskBot.app with identity: '${SIGN_IDENTITY}' and stable Designated Requirement..."
+codesign --force --deep --options runtime \
+    --entitlements "${ENTITLEMENTS}" \
+    -r '=designated => identifier "com.deskbot.assistant"' \
+    --sign "${SIGN_IDENTITY}" \
+    dist/DeskBot.app
+
+echo "Verifying app bundle signature..."
+codesign -d -vvv dist/DeskBot.app
+echo "Verifying designated requirement (must NOT be pinned to cdhash):"
+codesign -d -r- dist/DeskBot.app
+
+echo "[3/4] Preparing DMG staging directory with drag-and-drop link..."
 DMG_STAGING="dist/dmg_staging"
 rm -rf "${DMG_STAGING}"
 mkdir -p "${DMG_STAGING}"
@@ -59,7 +76,7 @@ DMG_NAME="DeskBot-macOS-${ARCH}.dmg"
 DMG_PATH="dist/${DMG_NAME}"
 rm -f "${DMG_PATH}"
 
-echo "[3/3] Creating compressed DMG disk image: ${DMG_PATH}..."
+echo "[4/4] Creating compressed DMG disk image: ${DMG_PATH}..."
 hdiutil create \
     -volname "DeskBot" \
     -srcfolder "${DMG_STAGING}" \
@@ -68,6 +85,13 @@ hdiutil create \
     "${DMG_PATH}"
 
 rm -rf "${DMG_STAGING}"
+
+# Update installed /Applications/DeskBot.app if present or writable
+if [ -d "/Applications/DeskBot.app" ] && [ -w "/Applications" ]; then
+    echo "Updating /Applications/DeskBot.app..."
+    rm -rf "/Applications/DeskBot.app"
+    cp -R "dist/DeskBot.app" "/Applications/"
+fi
 
 echo "============================================================"
 echo " Build successful!"

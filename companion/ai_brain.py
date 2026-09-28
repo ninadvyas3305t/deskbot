@@ -150,9 +150,17 @@ def reset_history() -> None:
     _CONVERSATION_TURNS.clear()
 
 
+def _get_api_key() -> Optional[str]:
+    """Retrieve NVIDIA API key from os.environ."""
+    key = os.getenv("NVIDIA_API_KEY")
+    if key and key.strip():
+        return key.strip()
+    return None
+
+
 def create_client() -> OpenAI:
     """Create the NVIDIA API client."""
-    api_key = os.getenv("NVIDIA_API_KEY")
+    api_key = _get_api_key()
 
     if not api_key:
         raise RuntimeError(
@@ -332,10 +340,13 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
 
     # Rule 00: Safe deterministic math & calculations
     try:
-        from tools.calculator import evaluate_math
+        try:
+            from tools.calculator import evaluate_math
+        except ImportError:
+            from companion.tools.calculator import evaluate_math
         math_eval = evaluate_math(cleaned_speech)
         if math_eval:
-            return {"action": "direct_answer", "response": math_eval}
+            return {"action": "calculate", "query": cleaned_speech, "response": math_eval}
     except Exception:
         pass
 
@@ -483,9 +494,9 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
 
     # Rule 0D: Screenshot Capture (strictly requires capture verb or standalone screenshot, never triggers on open/view/where)
     if not is_open_intent and not re.search(r"\b(?:delete|remove|erase|where|find)\b", cleaned_speech):
-        if re.search(r"\b(?:take|capture|grab|snap|make|shoot)(?:\s+(?:a|the))?\s+(?:screenshot|screen\s*shot|screen\s*capture)\b", cleaned_speech) or \
+        if re.search(r"\b(?:take|capture|grab|snap|make|shoot)(?:\s+(?:a|the))?\s+(?:screenshot|screen\s*shot|screen\s*capture|ss|snapshot)\b", cleaned_speech) or \
            re.search(r"\bcapture\s+(?:the\s+)?screen\b", cleaned_speech) or \
-           cleaned_speech in {"screenshot", "take screenshot", "take a screenshot", "capture screen", "screen capture"}:
+           cleaned_speech in {"screenshot", "ss", "snapshot", "take ss", "take a ss", "take screenshot", "take a screenshot", "capture screen", "screen capture"}:
             return {"action": "screenshot"}
 
     # Rule DEV-MODE: Enter/exit developer mode
@@ -512,10 +523,15 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
     if re.search(r"\b(?:system\s+(?:info|metrics|status)|cpu\s+usage|battery\s+(?:level|status|percent)|ram\s+usage|memory\s+usage)\b", cleaned_speech):
         return {"action": "system_info"}
 
-    weather_match = re.search(r"\b(?:what\s*(?:'s|\s+is)\s+the\s+weather|check\s+weather|how\s*(?:'s|\s+is)\s+the\s+weather)(?:\s+in\s+([a-zA-Z\s]+))?\b", cleaned_speech)
+    weather_match = re.search(
+        r"\b(?:what(?:'s|\s+is)\s+(?:the\s+)?weather|how(?:'s|\s+is)\s+(?:the\s+)?weather|tell\s+me\s+(?:the\s+)?weather|check\s+(?:the\s+)?weather|weather)\b(?:\s+(?:in|for|at)\s+([a-zA-Z\s]+))?",
+        cleaned_speech,
+    )
     if weather_match:
         city = weather_match.group(1)
-        return {"action": "weather", "query": city.strip().title() if city else None}
+        if city:
+            city = re.sub(r"\b(?:today|tomorrow|now|please|right now)\b", "", city, flags=re.IGNORECASE).strip()
+        return {"action": "weather", "query": city.title() if city else None}
 
     # Rule VISION-SCREEN: Visual Screen Intelligence & Code Understanding
     if re.search(r"\b(?:what(?:\s*is|'s)\s+(?:on|visible\s+on)\s+(?:my\s+|the\s+)?screen|look\s+at\s+my\s+screen|inspect\s+(?:my\s+)?screen|examine\s+(?:my\s+)?screen|read\s+(?:my\s+|what's\s+on\s+my\s+)?screen|what\s+do\s+you\s+see(?:\s+on\s+my\s+screen)?|what\s+(?:am\s+i|are\s+we)\s+looking\s+at)\b", cleaned_speech):
@@ -732,7 +748,7 @@ def understand_intent(command: str, context_prompt: str = "") -> dict | None:
             if valid:
                 return fallback
 
-        if not os.getenv("NVIDIA_API_KEY"):
+        if not _get_api_key():
             logger.warning("NVIDIA_API_KEY is not set. Cloud AI reasoning is disabled.")
             return {
                 "action": "direct_answer",
@@ -820,7 +836,7 @@ Search Results:
 
 Synthesize a 2-4 sentence spoken answer based strictly on the search results above."""
 
-    api_key = os.getenv("NVIDIA_API_KEY")
+    api_key = _get_api_key()
     if not api_key:
         # Graceful offline fallback: extract top snippets cleanly
         top = results[0]

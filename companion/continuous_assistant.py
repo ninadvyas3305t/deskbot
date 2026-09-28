@@ -126,24 +126,16 @@ def run_assistant(
     idle_cooldown_until = 0.0
 
     def reset_wake_scores() -> None:
-        """Reset openWakeWord to clean baseline state, eliminating residual ghost detections without causing deafness."""
+        """Reset openWakeWord to clean baseline state, eliminating residual ghost detections without wiping acoustic spectrogram memory."""
         nonlocal consecutive_wake_hits
         consecutive_wake_hits = 0
         wake_pcm_buffer.clear()
         if hasattr(wake_detector, "prediction_buffer"):
-            wake_detector.prediction_buffer.clear()
-        if hasattr(wake_detector, "preprocessor"):
-            prep = wake_detector.preprocessor
-            if hasattr(prep, "raw_data_buffer"):
-                prep.raw_data_buffer.clear()
-            if hasattr(prep, "melspectrogram_buffer"):
-                prep.melspectrogram_buffer = np.ones((76, 32))
-            if hasattr(prep, "accumulated_samples"):
-                prep.accumulated_samples = 0
-            if hasattr(prep, "raw_data_remainder"):
-                prep.raw_data_remainder = np.empty(0)
-            if _baseline_feature_buffer is not None:
-                prep.feature_buffer = _baseline_feature_buffer.copy()
+            if isinstance(wake_detector.prediction_buffer, dict):
+                for k in list(wake_detector.prediction_buffer.keys()):
+                    wake_detector.prediction_buffer[k].clear()
+            elif hasattr(wake_detector.prediction_buffer, "clear"):
+                wake_detector.prediction_buffer.clear()
 
     def enter_idle(cooldown_seconds: float = 0.4, force_log: bool = False) -> None:
         """Transition cleanly to IDLE with full buffer flushing and an acoustic refractory cooldown."""
@@ -171,18 +163,31 @@ def run_assistant(
             audio_engine.ring_buffer.clear()
         reset_wake_scores()
 
-    def process_utterance(initial_pcm: bytes | None = None, initial_transcript: str | None = None) -> bool:
+    def process_utterance(
+        initial_pcm: bytes | None = None,
+        initial_transcript: str | None = None,
+        wake_ms: float = 0.0,
+    ) -> bool:
         """Transcribe, interpret with context, execute tool, confirm fuzzy deletions, and handle follow-up."""
         current_pcm: Optional[bytes] = initial_pcm
         current_transcript: Optional[str] = initial_transcript
+        current_wake_ms: float = wake_ms
 
         while current_pcm or current_transcript:
+            t_total_start = time.perf_counter()
+            stt_ms = 0.0
+            tool_ms = 0.0
+            response_ms = 0.0
+            tts_ms = 0.0
+
             if not current_transcript:
                 save_wav(current_pcm, config.COMMAND_AUDIO_PATH)
                 validate_audio(config.COMMAND_AUDIO_PATH)
 
                 state_machine.transition_to(AssistantState.TRANSCRIBING)
+                t0_stt = time.perf_counter()
                 transcript, _lang = transcribe(config.COMMAND_AUDIO_PATH, model_name=stt_model)
+                stt_ms = (time.perf_counter() - t0_stt) * 1000.0
 
                 if not transcript or not transcript.strip():
                     state_machine.log("STT", "Could not transcribe audio.")
@@ -198,6 +203,7 @@ def run_assistant(
             state_machine.on_transcript(clean_transcript)
 
             # Fast-path deterministic intent check (zero cloud latency for local utilities, time, screenshots, files)
+            t0_intent = time.perf_counter()
             intent = fast_intent_match(clean_transcript)
 
             if not intent:
@@ -206,10 +212,23 @@ def run_assistant(
                 context_prompt = conversation_context.get_context_for_prompt()
                 intent = understand_intent(clean_transcript, context_prompt=context_prompt)
 
+            intent_ms = (time.perf_counter() - t0_intent) * 1000.0
+
             if not intent:
                 state_machine.log("AI", "Could not determine intent.")
                 msg = "Could not determine intent."
+                t0_tts = time.perf_counter()
                 speak_and_settle(msg)
+                tts_ms = (time.perf_counter() - t0_tts) * 1000.0
+                total_ms = (time.perf_counter() - t_total_start) * 1000.0 + current_wake_ms
+                perf_msg = (
+                    f"[PERF] Wake: {current_wake_ms:.1f} ms | STT: {stt_ms:.1f} ms | "
+                    f"Intent: {intent_ms:.1f} ms | Tool: {tool_ms:.1f} ms | "
+                    f"Response: {response_ms:.1f} ms | TTS: {tts_ms:.1f} ms | "
+                    f"TOTAL: {total_ms:.1f} ms"
+                )
+                logger.info(perf_msg)
+                print(perf_msg, flush=True)
                 conversation_context.add_turn(
                     user_speech=clean_transcript,
                     tool_name="unknown",
@@ -232,7 +251,9 @@ def run_assistant(
                 # Step 1: Live information retrieval via search tool
                 action_desc = get_action_description(intent)
                 state_machine.transition_to(AssistantState.EXECUTING, context=action_desc)
+                t0_tool = time.perf_counter()
                 result = execute_intent(intent)
+                tool_ms = (time.perf_counter() - t0_tool) * 1000.0
                 state_machine.on_tool(action, result.success, result.message)
 
                 # Step 2: Answer synthesis via AI reasoning layer
@@ -240,19 +261,23 @@ def run_assistant(
                 search_results = result.data if isinstance(result.data, list) else []
                 search_query = str(query or clean_transcript)
                 context_prompt = conversation_context.get_context_for_prompt()
+                t0_resp = time.perf_counter()
                 synthesized_answer = synthesize_web_answer(
                     user_query=clean_transcript,
                     search_query=search_query,
                     results=search_results,
                     context_prompt=context_prompt,
                 )
+                response_ms = (time.perf_counter() - t0_resp) * 1000.0
                 spoken_response = synthesized_answer
                 state_machine.on_response(spoken_response)
             elif action == "screen_analysis":
                 # Visual Screen Intelligence & Code Understanding
                 action_desc = get_action_description(intent)
                 state_machine.on_vision_analysis(context=action_desc)
+                t0_tool = time.perf_counter()
                 result = execute_intent(intent)
+                tool_ms = (time.perf_counter() - t0_tool) * 1000.0
                 state_machine.on_tool(action, result.success, result.message)
                 spoken_response = result.response_text or result.message
 
@@ -261,7 +286,9 @@ def run_assistant(
             else:
                 action_desc = get_action_description(intent)
                 state_machine.transition_to(AssistantState.EXECUTING, context=action_desc)
+                t0_tool = time.perf_counter()
                 result = execute_intent(intent)
+                tool_ms = (time.perf_counter() - t0_tool) * 1000.0
                 state_machine.on_tool(action, result.success, result.message)
                 spoken_response = result.response_text or result.message
 
@@ -280,7 +307,9 @@ def run_assistant(
                 display_name = result.data.get("display_name", Path(target_path_str).name)
                 conf_prompt = spoken_response
 
+                t0_tts = time.perf_counter()
                 speak_and_settle(conf_prompt)
+                tts_ms = (time.perf_counter() - t0_tts) * 1000.0
 
                 state_machine.on_confirmation(conf_prompt)
                 conf_pcm = speech_detector.capture_utterance(
@@ -341,7 +370,9 @@ def run_assistant(
                         continue
             else:
                 # Standard spoken response
+                t0_tts = time.perf_counter()
                 speak_and_settle(spoken_response)
+                tts_ms = (time.perf_counter() - t0_tts) * 1000.0
 
                 conversation_context.add_turn(
                     user_speech=clean_transcript,
@@ -350,6 +381,17 @@ def run_assistant(
                     tool_success=result.success,
                     assistant_response=spoken_response,
                 )
+
+            total_ms = (time.perf_counter() - t_total_start) * 1000.0 + current_wake_ms
+            perf_msg = (
+                f"[PERF] Wake: {current_wake_ms:.1f} ms | STT: {stt_ms:.1f} ms | "
+                f"Intent: {intent_ms:.1f} ms | Tool: {tool_ms:.1f} ms | "
+                f"Response: {response_ms:.1f} ms | TTS: {tts_ms:.1f} ms | "
+                f"TOTAL: {total_ms:.1f} ms"
+            )
+            logger.info(perf_msg)
+            print(perf_msg, flush=True)
+            current_wake_ms = 0.0
 
             # Post-Command Conversational Confirmation: "Is that all?"
             follow_up_prompt = "Is that all?"
@@ -492,7 +534,7 @@ def run_assistant(
                     continue
 
                 try:
-                    process_utterance(captured_pcm)
+                    process_utterance(captured_pcm, wake_ms=0.0)
                 except Exception as cmd_error:
                     state_machine.handle_error_and_recover(f"Command processing error: {cmd_error}")
                     enter_idle()
@@ -520,6 +562,7 @@ def run_assistant(
 
             detected = False
             detected_score = 0.0
+            wake_eval_start = time.perf_counter()
 
             while len(wake_pcm_buffer) >= WAKE_CHUNK_BYTES:
                 chunk_bytes = bytes(wake_pcm_buffer[:WAKE_CHUNK_BYTES])
@@ -565,6 +608,7 @@ def run_assistant(
                 continue
 
             # Wake Word Detected
+            wake_latency_ms = (time.perf_counter() - wake_eval_start) * 1000.0
             state_machine.on_wake(detected_score)
             reset_wake_scores()
 
@@ -583,7 +627,7 @@ def run_assistant(
                         return 0
                     continue
 
-                process_utterance(captured_pcm)
+                process_utterance(captured_pcm, wake_ms=wake_latency_ms)
 
             except Exception as cmd_error:
                 state_machine.handle_error_and_recover(f"Command processing error: {cmd_error}")

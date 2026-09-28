@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import ast
-import config
+try:
+    import config
+except ImportError:
+    from companion import config
 import json
 import logging
 import os
@@ -821,45 +824,68 @@ launch_app = launch_windows_app
 # --- Registration ---
 
 @REGISTRY.register("open_app", description_fn=lambda q: f"Launching app: {q}")
-def _handle_open_app(query: Any) -> bool:
-    return launch_app(str(query or ""))
+def _handle_open_app(query: Any) -> ToolResult:
+    clean_app = str(query or "").strip()
+    if not clean_app:
+        return ToolResult(False, "Missing app name", "Please specify which app you want to open.")
+    ok = launch_app(clean_app)
+    if ok:
+        return ToolResult(True, f"Opened {clean_app}", f"Opening {clean_app}.")
+    return ToolResult(False, f"Could not find or launch {clean_app}", f"I couldn't find or open {clean_app}.")
 
 
 @REGISTRY.register("open_website", description_fn=lambda q: f"Opening website: {q}")
-def _handle_open_website(query: Any) -> bool:
+def _handle_open_website(query: Any) -> ToolResult:
     website = str(query or "").strip().lower()
+    if not website:
+        return ToolResult(False, "Missing website", "Please specify which website to open.")
     if website in {"youtube", "yt", "youtube.com", "www.youtube.com"}:
-        return open_youtube()
+        ok = open_youtube()
+        return ToolResult(ok, "Opened YouTube" if ok else "Failed to open YouTube", "Opening YouTube." if ok else "I couldn't open YouTube.")
     if website in {"google", "google.com", "www.google.com"}:
-        return open_google()
+        ok = open_google()
+        return ToolResult(ok, "Opened Google" if ok else "Failed to open Google", "Opening Google." if ok else "I couldn't open Google.")
     if website.startswith(("http://", "https://")):
-        webbrowser.open(website)
-        return True
+        try:
+            webbrowser.open(website)
+            return ToolResult(True, f"Opened {website}", f"Opening {website}.")
+        except Exception as err:
+            return ToolResult(False, str(err), f"I couldn't open {website}.")
     if "." in website:
-        webbrowser.open(f"https://{website}")
-        return True
+        try:
+            webbrowser.open(f"https://{website}")
+            return ToolResult(True, f"Opened https://{website}", f"Opening {website}.")
+        except Exception as err:
+            return ToolResult(False, str(err), f"I couldn't open {website}.")
     print(f"Unrecognized website address: {website}")
-    return False
+    return ToolResult(False, f"Unrecognized website: {website}", f"I couldn't recognize the website '{website}'.")
 
 
 @REGISTRY.register("youtube_search", description_fn=lambda q: f"Searching YouTube for: {q}")
-def _handle_youtube_search(query: Any) -> bool:
-    return search_youtube(str(query or ""))
+def _handle_youtube_search(query: Any) -> ToolResult:
+    q_str = str(query or "").strip()
+    ok = search_youtube(q_str)
+    return ToolResult(ok, f"YouTube search: {q_str}" if ok else "Failed YouTube search", f"Searching YouTube for {q_str}." if ok else "Could not open YouTube search.")
 
 
 @REGISTRY.register("youtube_play", description_fn=lambda q: f"Playing YouTube: {q or 'music'}")
-def _handle_youtube_play(query: Any) -> bool:
-    return play_youtube(str(query) if query else None)
+def _handle_youtube_play(query: Any) -> ToolResult:
+    q_str = str(query) if query else "music"
+    ok = play_youtube(str(query) if query else None)
+    return ToolResult(ok, f"Playing YouTube: {q_str}" if ok else "Failed YouTube play", f"Playing {q_str} on YouTube." if ok else "Could not play on YouTube.")
 
 
 @REGISTRY.register("spotify_open", description_fn=lambda q: "Opening Spotify")
-def _handle_spotify_open(query: Any) -> bool:
-    return open_spotify()
+def _handle_spotify_open(query: Any = None) -> ToolResult:
+    ok = open_spotify()
+    return ToolResult(ok, "Opened Spotify" if ok else "Failed to open Spotify", "Opening Spotify." if ok else "I couldn't open Spotify.")
 
 
 @REGISTRY.register("spotify_play", description_fn=lambda q: f"Playing on Spotify: {q or 'music'}")
-def _handle_spotify_play(query: Any) -> bool:
-    return play_spotify(str(query) if query else None)
+def _handle_spotify_play(query: Any) -> ToolResult:
+    q_str = str(query) if query else "music"
+    ok = play_spotify(str(query) if query else None)
+    return ToolResult(ok, f"Playing Spotify: {q_str}" if ok else "Failed Spotify play", f"Playing {q_str} on Spotify." if ok else "Could not play on Spotify.")
 
 
 # --- Volume and Audio Controls ---
@@ -972,18 +998,42 @@ def _handle_unmute(query: Any) -> ToolResult:
 def _handle_screenshot(query: Any) -> ToolResult:
     try:
         import datetime
-        from PIL import ImageGrab
-        screenshots_dir = Path.home() / "Pictures" / "Screenshots"
-        screenshots_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"DeskBot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-        target_path = screenshots_dir / filename
-        img = ImageGrab.grab()
+        try:
+            from platform_layer.permissions import has_screen_capture_permission, request_screen_capture_permission
+            from vision.screen_capture import capture_raw_screen
+        except (ImportError, ModuleNotFoundError):
+            from companion.platform_layer.permissions import has_screen_capture_permission, request_screen_capture_permission
+            from companion.vision.screen_capture import capture_raw_screen
+
+        if sys.platform == "darwin" and not has_screen_capture_permission():
+            # Trigger OS prompt once on explicit user screenshot action
+            request_screen_capture_permission()
+            return ToolResult(
+                False,
+                "Screen Recording permission is required.",
+                "Screen Recording permission is required to capture screenshots. Please enable DeskBot in System Settings → Privacy & Security → Screen & System Audio Recording.",
+            )
+
+        desktop_dir = Path.home() / "Desktop"
+        desktop_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"DeskBot_Screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        target_path = desktop_dir / filename
+
+        img = capture_raw_screen()
+        if img is None:
+            return ToolResult(
+                False,
+                "Could not capture screenshot. Screen recording permission may be required.",
+                "I was unable to capture your screen. Please ensure Screen Recording permission is enabled under System Settings → Privacy & Security → Screen & System Audio Recording.",
+            )
+
         img.save(str(target_path))
+
         return ToolResult(
             True,
             f"Saved to {target_path}",
-            "Screenshot captured and saved to your Screenshots folder.",
-            data=str(target_path),
+            "Screenshot captured and saved to your Desktop.",
+            data={"path": str(target_path)},
         )
     except Exception as err:
         logger.debug("Screenshot error: %s", err)
@@ -1186,9 +1236,14 @@ def _handle_system_info(query: Any = None) -> ToolResult:
 
 @REGISTRY.register("weather", description_fn=lambda q: f"Checking weather: {q or 'local'}")
 def _handle_weather(query: Any = None) -> ToolResult:
-    from tools.info_tools import get_weather
+    try:
+        from tools.info_tools import get_weather
+    except ImportError:
+        from companion.tools.info_tools import get_weather
     res = get_weather(str(query) if query else None)
     if "error" in res:
+        if res.get("need_city"):
+            return ToolResult(True, "City required", "Which city should I check?", data=res)
         return ToolResult(False, res["error"], f"Could not retrieve weather: {res['error']}")
     city = res["city"]
     temp = res["temperature_c"]
@@ -1204,12 +1259,17 @@ def _handle_direct_answer(query: Any) -> ToolResult:
 
 @REGISTRY.register("calculate", description_fn=lambda q: f"Calculating: {q}")
 def _handle_calculate(query: Any) -> ToolResult:
-    from tools.calculator import evaluate_math
+    try:
+        from tools.calculator import evaluate_math
+    except ImportError:
+        from companion.tools.calculator import evaluate_math
     expr = str(query or "").strip()
+    if re.search(r"\b(?:is|equals)\s+[0-9\-.]+\.?$", expr, re.IGNORECASE):
+        return ToolResult(True, expr, expr, data={"result": expr})
     res = evaluate_math(expr)
     if res:
-        return ToolResult(True, "Calculation successful", res)
-    return ToolResult(False, "Calculation error", f"Could not calculate {expr}.")
+        return ToolResult(True, res, res, data={"result": res})
+    return ToolResult(False, f"Could not calculate {expr}.", f"Could not calculate {expr}.")
 
 
 @REGISTRY.register("enter_developer_mode", description_fn=lambda q: "Entering Developer Mode")

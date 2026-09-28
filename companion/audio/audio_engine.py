@@ -52,6 +52,8 @@ class AudioEngine:
         self._lock = threading.Lock()
         self._touch_detected = False
         self._touch_lock = threading.Lock()
+        self._last_touch_time: float = 0.0
+        self._touch_debounce_seconds: float = 0.6
         self._chunk_buffer = bytearray()
         import atexit
         atexit.register(self.stop)
@@ -189,8 +191,11 @@ class AudioEngine:
 
                 # Intercept hardware TTP223 touch sensor marker from ESP32
                 if b"TOUCH_TRIGGER" in raw_bytes:
+                    now = time.monotonic()
                     with self._touch_lock:
-                        self._touch_detected = True
+                        if (now - self._last_touch_time) >= self._touch_debounce_seconds:
+                            self._last_touch_time = now
+                            self._touch_detected = True
 
                     while b"TOUCH_TRIGGER" in raw_bytes:
                         pos = raw_bytes.find(b"TOUCH_TRIGGER")

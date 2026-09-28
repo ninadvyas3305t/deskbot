@@ -27,37 +27,48 @@ class CredentialStore:
         self._fallback_path = get_app_data_dir() / ".credential_vault"
 
     def get_api_key(self) -> Optional[str]:
-        """Retrieve the API key from OS Keychain/Vault, falling back to environment variable.
+        """Retrieve the API key from OS Keychain/Vault, falling back to environment variable or vault file.
 
         Never raises; returns None if no credential is saved.
         """
-        # 1. Native OS Credential Store (Windows Credential Manager / macOS Keychain)
-        try:
-            import keyring
-            key = keyring.get_password(self.service_name, self.username)
-            if key and key.strip():
-                return key.strip()
-        except Exception as err:
-            logger.debug("Keyring access error: %s", err)
-
-        # 2. Local Environment Variable (Development Mode)
+        # 1. Local Environment Variable
         env_key = os.getenv("NVIDIA_API_KEY")
         if env_key and env_key.strip():
             return env_key.strip()
 
-        # 3. Protected local file fallback (Headless / non-GUI environments where keyring backend is absent)
+        # 2. Protected local file fallback (Headless / packaged app bundles)
         try:
             if self._fallback_path.exists():
                 content = self._fallback_path.read_text(encoding="utf-8").strip()
                 if content:
+                    os.environ["NVIDIA_API_KEY"] = content
                     return content
         except Exception as err:
             logger.debug("Fallback credential file read error: %s", err)
 
+        # 3. Native OS Credential Store (Windows Credential Manager / macOS Keychain)
+        try:
+            import keyring
+            key = keyring.get_password(self.service_name, self.username)
+            if key and key.strip():
+                clean = key.strip()
+                os.environ["NVIDIA_API_KEY"] = clean
+                # Also cache to fallback path so packaged apps can read it
+                try:
+                    self._fallback_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._fallback_path.write_text(clean, encoding="utf-8")
+                    if sys.platform != "win32":
+                        os.chmod(self._fallback_path, 0o600)
+                except Exception:
+                    pass
+                return clean
+        except Exception as err:
+            logger.debug("Keyring access error: %s", err)
+
         return None
 
     def set_api_key(self, api_key: str) -> bool:
-        """Securely store the API key in the native OS vault.
+        """Securely store the API key in the native OS vault and local protected fallback file.
 
         Returns True on success, False on error.
         """
@@ -68,26 +79,21 @@ class CredentialStore:
         # Keep runtime environment in sync
         os.environ["NVIDIA_API_KEY"] = clean_key
 
-        # 1. Store in native OS Credential Store
-        keyring_saved = False
+        # 1. Always store to protected fallback file
+        try:
+            self._fallback_path.parent.mkdir(parents=True, exist_ok=True)
+            self._fallback_path.write_text(clean_key, encoding="utf-8")
+            if sys.platform != "win32":
+                os.chmod(self._fallback_path, 0o600)
+        except Exception as err:
+            logger.error("Could not write fallback credential file: %s", err)
+
+        # 2. Store in native OS Credential Store
         try:
             import keyring
             keyring.set_password(self.service_name, self.username, clean_key)
-            keyring_saved = True
         except Exception as err:
             logger.warning("Could not save to native OS keyring: %s", err)
-
-        # 2. If keyring failed or unavailable, save to protected file
-        if not keyring_saved:
-            try:
-                self._fallback_path.write_text(clean_key, encoding="utf-8")
-                # Restrict file permissions to user-read/write only (POSIX 0600)
-                if sys.platform != "win32":
-                    os.chmod(self._fallback_path, 0o600)
-                return True
-            except Exception as err:
-                logger.error("Could not write fallback credential file: %s", err)
-                return False
 
         return True
 

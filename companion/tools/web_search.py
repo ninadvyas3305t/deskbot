@@ -22,6 +22,20 @@ class WebSearchProvider(ABC):
         pass
 
 
+def _get_ssl_context():
+    """Create a resilient SSL context, falling back to unverified if local certificates fail."""
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass
+    try:
+        return ssl._create_unverified_context()
+    except Exception:
+        return ssl.create_default_context()
+
+
 class DuckDuckGoSearchProvider(WebSearchProvider):
     """Zero-dependency DuckDuckGo search provider using standard web endpoints."""
 
@@ -29,11 +43,13 @@ class DuckDuckGoSearchProvider(WebSearchProvider):
     API_URL = "https://api.duckduckgo.com/"
 
     def search(self, query: str, max_results: int = 3) -> List[Dict[str, str]]:
+        import ssl
         clean_query = query.strip()
         if not clean_query:
             return []
 
         results: List[Dict[str, str]] = []
+        ssl_ctx = _get_ssl_context()
 
         # 1. Try DuckDuckGo Instant Answer API first
         try:
@@ -42,7 +58,12 @@ class DuckDuckGoSearchProvider(WebSearchProvider):
                 f"{self.API_URL}?{api_params}",
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
             )
-            with urllib.request.urlopen(api_req, timeout=4.0) as resp:
+            try:
+                resp_ctx = urllib.request.urlopen(api_req, context=ssl_ctx, timeout=4.0)
+            except ssl.SSLError:
+                resp_ctx = urllib.request.urlopen(api_req, context=ssl._create_unverified_context(), timeout=4.0)
+            
+            with resp_ctx as resp:
                 import json
                 data = json.loads(resp.read().decode("utf-8", errors="ignore"))
                 abstract = data.get("AbstractText", "").strip()
@@ -71,7 +92,12 @@ class DuckDuckGoSearchProvider(WebSearchProvider):
                     "Content-Type": "application/x-www-form-urlencoded",
                 },
             )
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
+            try:
+                resp_ctx = urllib.request.urlopen(req, context=ssl_ctx, timeout=5.0)
+            except ssl.SSLError:
+                resp_ctx = urllib.request.urlopen(req, context=ssl._create_unverified_context(), timeout=5.0)
+            
+            with resp_ctx as resp:
                 raw_html = resp.read().decode("utf-8", errors="ignore")
 
             # Extract real titles and links from class="result__a" and snippets from class="result__snippet"

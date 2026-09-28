@@ -1,4 +1,4 @@
-"""Cross-platform on-demand screen capture and image optimization for DeskBot."""
+"""Cross-platform on-demand in-process screen capture and image optimization for DeskBot."""
 
 from __future__ import annotations
 
@@ -6,9 +6,7 @@ import base64
 import io
 import logging
 import os
-import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +43,6 @@ def optimize_image_for_vision(
     max_dimension: int = 1024,
     quality: int = 85,
 ) -> Tuple[Image.Image, str]:
-
     """Resize image to fit within max_dimension preserving aspect ratio, encode as base64 JPEG.
 
     Uses Lanczos resampling to keep code characters and syntax crisp while compressing
@@ -68,9 +65,8 @@ def optimize_image_for_vision(
 
     if max_side > max_dimension:
         scale = max_dimension / float(max_side)
-        new_w = max(1, int(orig_w * scale))
-        new_h = max(1, int(orig_h * scale))
-        # Support both Pillow >= 9.1 (Resampling.LANCZOS) and legacy Image.LANCZOS
+        new_w = max(1, int(round(orig_w * scale)))
+        new_h = max(1, int(round(orig_h * scale)))
         resample_filter = getattr(Image, "Resampling", Image).LANCZOS
         processed = processed.resize((new_w, new_h), resample=resample_filter)
 
@@ -80,32 +76,116 @@ def optimize_image_for_vision(
     return processed, base64_str
 
 
-def _capture_macos_native(bbox: Optional[Tuple[int, int, int, int]] = None) -> Optional[Image.Image]:
-    """Native macOS fallback using /usr/sbin/screencapture -x (soundless, zero-click)."""
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-        tmp_path = tmp.name
+def _capture_macos_in_process(bbox: Optional[Tuple[int, int, int, int]] = None) -> Optional[Image.Image]:
+    """Capture screen in-process via CoreGraphics CGWindowListCreateImage without spawning subprocesses.
 
+    Spawning external CLI binaries like /usr/sbin/screencapture causes macOS TCC to attribute
+    permissions to the helper binary or parent shell rather than DeskBot.app.
+    Direct in-process CoreGraphics capture keeps permission evaluation strictly within DeskBot.app.
+    """
     try:
-        cmd = ["/usr/sbin/screencapture", "-x"]
+        import ctypes
+        from ctypes import Structure, c_double, c_size_t, c_uint8, c_uint32, c_void_p, POINTER
+
+        class CGPoint(Structure):
+            _fields_ = [("x", c_double), ("y", c_double)]
+
+        class CGSize(Structure):
+            _fields_ = [("width", c_double), ("height", c_double)]
+
+        class CGRect(Structure):
+            _fields_ = [("origin", CGPoint), ("size", CGSize)]
+
+        cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+
+        cg.CGWindowListCreateImage.restype = c_void_p
+        cg.CGWindowListCreateImage.argtypes = [CGRect, c_uint32, c_uint32, c_uint32]
+        cg.CGImageGetWidth.restype = c_size_t
+        cg.CGImageGetWidth.argtypes = [c_void_p]
+        cg.CGImageGetHeight.restype = c_size_t
+        cg.CGImageGetHeight.argtypes = [c_void_p]
+        cg.CGImageGetBytesPerRow.restype = c_size_t
+        cg.CGImageGetBytesPerRow.argtypes = [c_void_p]
+        cg.CGImageGetDataProvider.restype = c_void_p
+        cg.CGImageGetDataProvider.argtypes = [c_void_p]
+        cg.CGDataProviderCopyData.restype = c_void_p
+        cg.CGDataProviderCopyData.argtypes = [c_void_p]
+
+        cf.CFDataGetBytePtr.restype = POINTER(c_uint8)
+        cf.CFDataGetBytePtr.argtypes = [c_void_p]
+        cf.CFDataGetLength.restype = c_size_t
+        cf.CFDataGetLength.argtypes = [c_void_p]
+        cf.CFRelease.restype = None
+        cf.CFRelease.argtypes = [c_void_p]
+
         if bbox is not None:
             x1, y1, x2, y2 = bbox
-            w = max(1, x2 - x1)
-            h = max(1, y2 - y1)
-            cmd.extend(["-R", f"{x1},{y1},{w},{h}"])
-        cmd.append(tmp_path)
+            rect = CGRect(
+                CGPoint(float(x1), float(y1)),
+                CGSize(max(1.0, float(x2 - x1)), max(1.0, float(y2 - y1))),
+            )
+        else:
+            rect = CGRect.in_dll(cg, "CGRectInfinite")
 
-        res = subprocess.run(cmd, capture_output=True, timeout=3.0)
-        if res.returncode == 0 and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
-            with Image.open(tmp_path) as img:
-                return img.copy()
-    except Exception as err:
-        logger.debug("macOS native screencapture fallback failed: %s", err)
-    finally:
+        # kCGWindowListOptionOnScreenOnly = 1, kCGNullWindowID = 0, kCGWindowImageDefault = 0
+        img_ref = cg.CGWindowListCreateImage(rect, 1, 0, 0)
+        if not img_ref:
+            return None
+
         try:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-        except OSError:
+            w = cg.CGImageGetWidth(img_ref)
+            h = cg.CGImageGetHeight(img_ref)
+            bpr = cg.CGImageGetBytesPerRow(img_ref)
+            if w <= 0 or h <= 0:
+                return None
+
+            prov = cg.CGImageGetDataProvider(img_ref)
+            if not prov:
+                return None
+
+            data_ref = cg.CGDataProviderCopyData(prov)
+            if not data_ref:
+                return None
+
+            try:
+                ptr = cf.CFDataGetBytePtr(data_ref)
+                length = cf.CFDataGetLength(data_ref)
+                buf = ctypes.string_at(ptr, length)
+                # macOS CoreGraphics returns BGRA pixel buffer
+                return Image.frombytes("RGBA", (w, h), buf, "raw", "BGRA", bpr, 1)
+            finally:
+                cf.CFRelease(data_ref)
+        finally:
+            cf.CFRelease(img_ref)
+
+    except Exception as err:
+        logger.debug("In-process macOS screen capture error: %s", err)
+        return None
+
+
+def capture_raw_screen(bbox: Optional[Tuple[int, int, int, int]] = None) -> Optional[Image.Image]:
+    """Capture raw, uncompressed full or region screenshot in memory across platforms."""
+    # 1. On macOS, prioritize direct in-process CoreGraphics capture
+    if sys.platform == "darwin":
+        img = _capture_macos_in_process(bbox=bbox)
+        if img is not None:
+            return img
+
+    # 2. Windows / Linux or fallback via Pillow ImageGrab
+    grab_module = ImageGrab
+    if grab_module is None:
+        try:
+            from PIL import ImageGrab as pil_grab
+            grab_module = pil_grab
+        except Exception:
             pass
+
+    if grab_module is not None:
+        try:
+            return grab_module.grab(bbox=bbox, all_screens=False)
+        except Exception as err:
+            logger.debug("Pillow ImageGrab failed: %s", err)
 
     return None
 
@@ -115,32 +195,25 @@ def capture_screen(
     quality: int = 85,
     bbox: Optional[Tuple[int, int, int, int]] = None,
 ) -> ScreenCaptureResult:
-
     """Capture the screen on-demand, optimize for vision models, and return ScreenCaptureResult.
 
     Strictly on-demand: Never continuously records or captures in the background.
-    Cross-platform: Windows (Pillow ImageGrab) & macOS (ImageGrab with screencapture fallback).
+    macOS: In-process CoreGraphics capture preserves TCC app identity.
+    Windows: Pillow ImageGrab with desktop coordinates.
     """
-    raw_image: Optional[Image.Image] = None
     capture_time = time.time()
-
-    # 1. Primary capture via Pillow ImageGrab
-    if ImageGrab is not None:
-        try:
-            raw_image = ImageGrab.grab(bbox=bbox, all_screens=False)
-        except Exception as err:
-            logger.debug("Pillow ImageGrab failed: %s", err)
-
-    # 2. macOS fallback if ImageGrab unavailable or failed
-    if raw_image is None and sys.platform == "darwin":
-        raw_image = _capture_macos_native(bbox=bbox)
+    raw_image = capture_raw_screen(bbox=bbox)
 
     if raw_image is None:
+        if sys.platform == "darwin":
+            raise RuntimeError(
+                "Could not capture screen. Screen Recording permission is required.\n"
+                "Please grant permission under System Settings → Privacy & Security → Screen & System Audio Recording."
+            )
         raise RuntimeError(
             "Could not capture screen. Pillow ImageGrab is unavailable and native capture failed."
         )
 
-    # 3. Optimize resolution and encode to base64 JPEG
     optimized_img, b64_data = optimize_image_for_vision(
         raw_image,
         max_dimension=max_dimension,

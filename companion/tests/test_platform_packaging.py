@@ -118,12 +118,15 @@ class TestCredentialStore(unittest.TestCase):
         self.patch_get.start()
         self.patch_del.start()
 
+        self.temp_dir = tempfile.TemporaryDirectory()
         self.cred = CredentialStore()
+        self.cred._fallback_path = Path(self.temp_dir.name) / ".credential_vault"
 
     def tearDown(self):
         self.patch_set.stop()
         self.patch_get.stop()
         self.patch_del.stop()
+        self.temp_dir.cleanup()
 
     def test_key_lifecycle(self):
         with patch.dict(os.environ, {}, clear=True):

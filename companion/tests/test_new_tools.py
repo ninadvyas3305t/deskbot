@@ -59,8 +59,9 @@ class TestNewTools(unittest.TestCase):
                     self.assertTrue(res.success)
                     self.assertTrue(bool(res))
 
+    @patch("vision.screen_capture._capture_macos_in_process", return_value=None)
     @patch("PIL.ImageGrab.grab")
-    def test_screenshot_action(self, mock_grab):
+    def test_screenshot_action(self, mock_grab, _mock_macos):
         mock_img = MagicMock()
         mock_grab.return_value = mock_img
 
