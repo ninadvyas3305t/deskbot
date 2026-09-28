@@ -44,7 +44,7 @@ jobs:
 
       - name: Run Test Suite
         run: |
-          pytest companion/tests/
+          pytest companion/tests/ -v --tb=short
 
       # ----------------------------------------------------
       # Windows Build Pipeline
@@ -62,7 +62,13 @@ jobs:
       - name: Build Windows Installer with Inno Setup
         if: runner.os == 'Windows'
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer/deskbot_setup.iss
+          if (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") {
+              & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer/deskbot_setup.iss
+          } elseif (Get-Command iscc -ErrorAction SilentlyContinue) {
+              iscc installer/deskbot_setup.iss
+          } else {
+              & "C:\Program Files\Inno Setup 6\ISCC.exe" installer/deskbot_setup.iss
+          }
 
       # ----------------------------------------------------
       # macOS Build Pipeline
