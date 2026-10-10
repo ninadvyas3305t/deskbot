@@ -6,14 +6,27 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
-import config
-from command_executor import ToolResult
-from vision.analyzer import (
-    NvidiaVisionAnalyzer,
-    VisionAnalysis,
-    VisionAnalyzer,
-)
-from vision.screen_capture import capture_screen
+try:
+    import config
+    from command_executor import ToolResult
+except ImportError:
+    from companion import config
+    from companion.command_executor import ToolResult
+
+try:
+    from .analyzer import (
+        NvidiaVisionAnalyzer,
+        VisionAnalysis,
+        VisionAnalyzer,
+    )
+    from .screen_capture import capture_screen
+except ImportError:
+    from vision.analyzer import (
+        NvidiaVisionAnalyzer,
+        VisionAnalysis,
+        VisionAnalyzer,
+    )
+    from vision.screen_capture import capture_screen
 
 logger = logging.getLogger(__name__)
 

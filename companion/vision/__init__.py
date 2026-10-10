@@ -1,17 +1,17 @@
 """DeskBot Visual Screen Intelligence and Code Understanding package."""
 
-from vision.analyzer import (
+from .analyzer import (
     MockVisionAnalyzer,
     NvidiaVisionAnalyzer,
     VisionAnalysis,
     VisionAnalyzer,
 )
-from vision.screen_capture import (
+from .screen_capture import (
     ScreenCaptureResult,
     capture_screen,
     optimize_image_for_vision,
 )
-from vision.service import (
+from .service import (
     clear_vision_cache,
     get_last_vision_result,
     get_vision_analyzer,

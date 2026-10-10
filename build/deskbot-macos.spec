@@ -48,6 +48,9 @@ hiddenimports = [
     "certifi",
     "requests",
     "urllib3",
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
 ]
 hiddenimports += collect_submodules("faster_whisper")
 hiddenimports += collect_submodules("ctranslate2")

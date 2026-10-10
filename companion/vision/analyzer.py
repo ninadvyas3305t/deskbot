@@ -12,7 +12,10 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-import config
+try:
+    import config
+except ImportError:
+    from companion import config
 
 logger = logging.getLogger(__name__)
 

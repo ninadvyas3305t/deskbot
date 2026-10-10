@@ -30,4 +30,5 @@ build/deskbot/
 build/deskbot-macos/
 *.dmg
 *.exe
+*.ses
 

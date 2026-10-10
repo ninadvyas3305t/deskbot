@@ -166,6 +166,16 @@ def _capture_macos_in_process(bbox: Optional[Tuple[int, int, int, int]] = None) 
 
 def capture_raw_screen(bbox: Optional[Tuple[int, int, int, int]] = None) -> Optional[Image.Image]:
     """Capture raw, uncompressed full or region screenshot in memory across platforms."""
+    # Ensure ambient edge overlay is temporarily suppressed so it does not contaminate vision
+    try:
+        from ui.edge_overlay import get_screen_overlay
+        overlay = get_screen_overlay()
+        if overlay and overlay.isVisible():
+            overlay.suppress_for_screenshot(duration_ms=300)
+            time.sleep(0.03)
+    except Exception:
+        pass
+
     # 1. On macOS, prioritize direct in-process CoreGraphics capture
     if sys.platform == "darwin":
         img = _capture_macos_in_process(bbox=bbox)

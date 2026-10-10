@@ -19,6 +19,16 @@ class AssistantState(str, enum.Enum):
     FOLLOW_UP = "FOLLOW_UP"
     ERROR = "ERROR"
 
+def _safe_get_bridge():
+    """Retrieve UI bridge instance safely across different import configurations."""
+    try:
+        try:
+            from companion.ui.bridge import get_ui_bridge
+        except ImportError:
+            from ui.bridge import get_ui_bridge
+        return get_ui_bridge()
+    except Exception:
+        return None
 
 
 class AssistantStateMachine:
@@ -86,17 +96,27 @@ class AssistantStateMachine:
             except Exception as cb_err:
                 self.log_debug(f"Transition callback error: {cb_err}")
 
+        bridge = _safe_get_bridge()
+        if bridge:
+            bridge.notify_state_change(old_state.value, new_state.value, context or "")
+
     def on_wake(self, confidence: float | None = None) -> None:
         """Handle wake-word detection event."""
         if confidence is not None:
             self.log("WAKE", f"{self.wake_word_name} detected (score: {confidence:.2f})")
         else:
             self.log("WAKE", f"{self.wake_word_name} detected")
+        bridge = _safe_get_bridge()
+        if bridge:
+            bridge.notify_wake(confidence or 1.0)
         self.transition_to(AssistantState.LISTENING)
 
     def on_touch(self) -> None:
         """Handle manual touch sensor activation event."""
         self.log("TOUCH", "Touch sensor triggered")
+        bridge = _safe_get_bridge()
+        if bridge:
+            bridge.notify_touch()
         self.transition_to(AssistantState.LISTENING)
 
     def on_follow_up(self, prompt: str = "Is that all?") -> None:
@@ -112,45 +132,67 @@ class AssistantStateMachine:
                 self._broadcaster(AssistantState.FOLLOW_UP)
             except Exception as b_err:
                 self.log_debug(f"State broadcaster error: {b_err}")
+        bridge = _safe_get_bridge()
+        if bridge:
+            bridge.notify_state_change(AssistantState.FOLLOW_UP.value, AssistantState.FOLLOW_UP.value, f'Asking "{prompt}"')
 
     def on_speech_start(self) -> None:
         """Handle speech detection event."""
         self.log("SPEECH", "User speech detected")
+        bridge = _safe_get_bridge()
+        if bridge:
+            bridge.notify_speech_start()
 
     def on_speech_end(self) -> None:
         """Handle end-of-speech detection event."""
         self.log("SPEECH", "End of speech")
+        bridge = _safe_get_bridge()
+        if bridge:
+            bridge.notify_speech_end()
 
     def on_transcript(self, text: str) -> None:
         """Log speech-to-text result."""
         self.log("STT", f'Recognized: "{text}"')
+        bridge = _safe_get_bridge()
+        if bridge:
+            bridge.notify_transcript(text)
 
     def on_vision_analysis(self, context: str = "Analyzing screen...") -> None:
         """Transition to SCREEN_ANALYSIS state and log vision event."""
         self.transition_to(AssistantState.SCREEN_ANALYSIS, context=context)
 
     def on_ai_action(self, action: str) -> None:
-
         """Log AI routing decision."""
         self.log("AI", f"Action: {action}")
+        bridge = _safe_get_bridge()
+        if bridge:
+            bridge.notify_ai_intent(action)
 
     def on_direct_answer(self, text: str) -> None:
         """Log direct answer response."""
         self.log("ANSWER", text)
+        bridge = _safe_get_bridge()
+        if bridge:
+            bridge.notify_direct_answer(text)
 
     def on_tool(self, tool_name: str, success: bool, reason: str = "") -> None:
         """Log tool execution result."""
         self.log("TOOL", tool_name)
-
         if success:
             self.log("TOOL", "Success")
         else:
             msg = f"Failed: {reason}" if reason else "Failed"
             self.log("TOOL", msg)
+        bridge = _safe_get_bridge()
+        if bridge:
+            bridge.notify_tool_result(tool_name, success, reason)
 
     def on_response(self, text: str) -> None:
         """Log final response text."""
         self.log("RESPONSE", text)
+        bridge = _safe_get_bridge()
+        if bridge:
+            bridge.notify_direct_answer(text)
 
     def on_speaking(self, text: str) -> None:
         """Log and transition to SPEAKING state with spoken text context."""

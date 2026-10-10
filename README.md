@@ -1,12 +1,13 @@
-# 🤖 DeskBot — Cross-Platform Plug-and-Play AI Companion Robot
+# 🤖 DeskBot 2.0 — Cross-Platform AI Hardware Companion Desktop Application
 
-[![Tests](https://img.shields.io/badge/tests-197%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-230%20passed-brightgreen.svg)]()
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS%20(Apple%20Silicon%20%26%20Intel)-blue.svg)]()
 [![Hardware](https://img.shields.io/badge/hardware-ESP32--S3%20%7C%20I2S%20Mic%20%7C%20OLED%20Face-orange.svg)]()
+[![UI Engine](https://img.shields.io/badge/UI-PySide6%20%7C%20Vector%20Face%20%7C%20Screen%20Overlay-cyan.svg)]()
 [![AI Engine](https://img.shields.io/badge/AI%20Brain-NVIDIA%20Nemotron%20%2B%20Llama%203.2%20Vision-purple.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**DeskBot** is an expressive, physical AI desktop companion robot paired with a production-grade, cross-platform desktop application. Combining physical hardware (ESP32-S3, high-fidelity I2S microphone, animated OLED robotic face, capacitive touch sensor) with a modular AI engine (local wake-word detection, fast-path deterministic heuristics, deep cloud reasoning, and visual screen intelligence), DeskBot transforms how you interact with your computer.
+**DeskBot 2.0** is an expressive, physical AI desktop companion robot paired with a commercial-grade, futuristic desktop companion application. Combining physical hardware (ESP32-S3, high-fidelity INMP441 I2S microphone, SSD1306 animated OLED face, capacitive touch sensor) with a rich PySide6 desktop suite, DeskBot delivers real-time animated face visualization, ambient screen-edge illumination effects, guided Wi-Fi and device management, local wake-word detection, fast-path heuristics, and deep visual screen understanding.
 
 ---
 
@@ -59,11 +60,18 @@ Download DeskBot → Run Installer / Open DMG → One-Time Setup Wizard → Plug
 - **Cloud Reasoning Brain**: NVIDIA Nemotron / Llama-3.1 70B with structured JSON schema output and conversation context memory.
 - **Developer Mode**: Workspace project inspection, semantic file search, recursive grep, targeted file reading, safe editing, and fuzzy deletion confirmation.
 
-### 5. Cross-Platform Desktop Integration
+### 5. DeskBot 2.0 Futuristic Desktop Application & Visual Effects
+- **Hardware-Companion Design System**: Dark obsidian/cyan palette (`#090C10`, `#111622`, `#00E5FF`) with responsive layout, custom badges, and navigation sidebar.
+- **High-Fidelity Animated Face Engine**: Scalable vector rendering preserving exact physical OLED 24x24 eye proportions on a 128x64 aspect ratio. Features smooth antialiasing, spring physics, natural blinking, micro-saccades, audio-reactive mouth movement, and live assistant state synchronization.
+- **Ambient Screen-Edge Illumination**: Google Lens-inspired ambient perimeter glow on screen edges during assistant states (Listening cyan, Transcribing blue, Thinking magenta, Executing emerald, Speaking electric blue). Fully click-through, non-intrusive, and automatically suppressed during screenshot captures.
+- **Guided Hardware & Wi-Fi Management**: Automatic ESP32 USB auto-discovery without hardcoded ports, live microphone level visualizer, face test trigger, and guided Wi-Fi provisioning (Station & SoftAP).
+- **Activity & Security Inspector**: Live chronological timeline of voice transcripts, classified intents, tool outcomes, and token usage with automatic secret key redaction (`nvapi-••••`).
+
+### 6. Cross-Platform Desktop Integration & Security
 - **System Tray & Menu Bar**: Native status icon with dynamic mood indicator, Settings dialog, log viewer, autostart toggle, and manual reconnect.
 - **OS Native Credential Vault**: Stores your NVIDIA API key securely inside macOS Keychain or Windows Credential Manager via `keyring`. Zero plaintext keys on disk.
 - **Automatic Autostart**: Seamless "Start with System" support via macOS LaunchAgent and Windows Registry Run key.
-- **Privacy & Permissions**: Proactive microphone and screen recording permission checks with actionable guidance.
+- **Privacy & Permissions**: Proactive microphone and screen recording permission checks with actionable guidance. Permanent macOS TCC permission persistence.
 
 ---
 
@@ -162,7 +170,7 @@ pio run -t upload
 ```
 
 ### 4. Run Automated Tests
-DeskBot includes a comprehensive test suite (197 unit and integration tests covering the platform layer, device discovery, speech detectors, fast-path intent matching, vision pipeline, and file safety tools):
+DeskBot includes a comprehensive test suite (230+ unit, integration, and GUI tests covering the desktop UI bridge, face engine, edge overlay, platform layer, device discovery, speech detectors, fast-path intent matching, vision pipeline, and file safety tools):
 ```bash
 pytest companion/tests/
 ```

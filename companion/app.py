@@ -186,10 +186,11 @@ def main() -> int:
     except Exception:
         pass
 
-    # 7. Run continuous assistant loop
+    # 6. Run assistant and Desktop Application
     exit_code = 0
     try:
-        if args.cli or args.once or tray is None:
+        if args.cli or args.once:
+            # Headless / Terminal / Test mode
             exit_code = run_assistant(
                 port=port,
                 baud=baud,
@@ -203,6 +204,23 @@ def main() -> int:
                 stop_event=stop_event,
             )
         else:
+            # Full Desktop Application with animated face, device manager, and overlay
+            from PySide6.QtWidgets import QApplication
+            from ui.main_window import DeskBotMainWindow
+
+            q_app = QApplication.instance() or QApplication(sys.argv)
+            q_app.setApplicationName("DeskBot")
+            q_app.setApplicationDisplayName("DeskBot — Hardware AI Companion")
+
+            main_win = DeskBotMainWindow(on_shutdown=request_shutdown)
+            main_win.show()
+
+            # If API key is not yet configured, automatically guide to Settings view
+            if not cred_store.has_api_key():
+                main_win.stack.setCurrentIndex(3)
+                main_win.btn_nav_settings.setChecked(True)
+                main_win.lbl_page_title.setText("Settings")
+
             assistant_thread = threading.Thread(
                 target=run_assistant,
                 kwargs=dict(
@@ -222,12 +240,12 @@ def main() -> int:
             )
             assistant_thread.start()
 
-            # Run system tray event loop on the main thread (required by macOS AppKit)
-            tray.run()
+            # Execute Qt main event loop on the primary thread
+            exit_code = q_app.exec()
     except KeyboardInterrupt:
         logger.info("[APP] Keyboard interrupt received.")
     except Exception as err:
-        logger.exception("[APP] Fatal error in assistant loop: %s", err)
+        logger.exception("[APP] Fatal error in application loop: %s", err)
         exit_code = 1
     finally:
         request_shutdown()
