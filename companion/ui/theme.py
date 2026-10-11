@@ -95,7 +95,7 @@ QFrame.Card:hover {{
 /* Labels */
 QLabel {{
     color: {COLOR_TEXT_PRIMARY};
-    font-family: "SF Pro Display", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }}
 
 QLabel.Heading1 {{

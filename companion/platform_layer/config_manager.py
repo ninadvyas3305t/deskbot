@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "wake_word": "hey_jarvis",
-    "wake_threshold": 0.48,
-    "mic_gain": 1.2,
+    "wake_threshold": 0.38,
+    "mic_gain": 1.5,
     "stt_model": "base",
     "tts_enabled": True,
     "tts_engine": "auto",

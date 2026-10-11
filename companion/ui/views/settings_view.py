@@ -125,11 +125,11 @@ class SettingsView(QWidget):
 
         # Wake Sensitivity slider
         row_sens = QHBoxLayout()
-        lbl_sens = QLabel("Wake Sensitivity:")
-        lbl_sens.setStyleSheet(f"font-size: 13px; color: {COLOR_TEXT_SECONDARY}; min-width: 140px;")
+        lbl_sens = QLabel("Wake Threshold (lower = more sensitive):")
+        lbl_sens.setStyleSheet(f"font-size: 13px; color: {COLOR_TEXT_SECONDARY}; min-width: 200px;")
         self.slider_sens = QSlider(Qt.Horizontal)
-        self.slider_sens.setRange(30, 85)
-        self.lbl_sens_val = QLabel("0.55")
+        self.slider_sens.setRange(20, 75)
+        self.lbl_sens_val = QLabel("0.38")
         self.lbl_sens_val.setStyleSheet(f"font-size: 12px; color: {COLOR_ACCENT_CYAN}; min-width: 35px;")
         self.slider_sens.valueChanged.connect(lambda v: self.lbl_sens_val.setText(f"{v/100:.2f}"))
         row_sens.addWidget(lbl_sens)
@@ -326,7 +326,10 @@ class SettingsView(QWidget):
             self.lbl_api_status.setStyleSheet("color: #00E676;")
 
         self.combo_wake.setCurrentText(str(self.config_mgr.get("wake_word", "hey_jarvis")))
-        thresh = float(self.config_mgr.get("wake_threshold", 0.55))
+        thresh = float(self.config_mgr.get("wake_threshold", 0.38))
+        if thresh > 0.45:
+            thresh = 0.38
+            self.config_mgr.set("wake_threshold", 0.38)
         self.slider_sens.setValue(int(thresh * 100))
         self.lbl_sens_val.setText(f"{thresh:.2f}")
 

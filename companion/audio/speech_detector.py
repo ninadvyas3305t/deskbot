@@ -22,9 +22,9 @@ class SpeechDetector:
         frame_duration_ms: int = 30,
         vad_mode: int = 2,
         pre_roll_seconds: float = 0.35,
-        silence_duration_seconds: float = 0.8,
-        initial_speech_timeout: float = 4.5,
-        max_command_seconds: float = 12.0,
+        silence_duration_seconds: float = 0.50,
+        initial_speech_timeout: float = 4.0,
+        max_command_seconds: float = 8.0,
         transition_window_seconds: float = 0.3,
         min_speech_amplitude: int = 200,
     ):
@@ -103,6 +103,7 @@ class SpeechDetector:
         consecutive_speech = 0
         voiced_frames_count = 0
         onset_candidate_frames: list[bytes] = []
+        recent_vad_decisions: deque[bool] = deque(maxlen=self.silence_frames_threshold)
 
         start_time = time.monotonic()
         deadline = start_time + self.max_command_seconds
@@ -170,6 +171,7 @@ class SpeechDetector:
                             recording.extend(f)
                         onset_candidate_frames.clear()
                         consecutive_silence = 0
+                        recent_vad_decisions.clear()
                         if on_speech_start and not speech_start_announced:
                             on_speech_start()
                             speech_start_announced = True
@@ -181,19 +183,30 @@ class SpeechDetector:
             # --- Speech is actively being recorded ---
             else:
                 recording.extend(frame)
+                recent_vad_decisions.append(is_speech)
                 if is_speech:
-                    consecutive_silence = 0
+                    consecutive_silence = max(0, consecutive_silence - 2)
                     voiced_frames_count += 1
                 else:
                     consecutive_silence += 1
-                    if consecutive_silence >= self.silence_frames_threshold:
-                        if on_speech_end:
-                            on_speech_end()
-                        # Minimum duration filter: require at least 0.3s of total audio and minimum voiced frames
-                        min_bytes = int(0.3 * self.sample_rate * self.sample_width)
-                        if len(recording) < min_bytes or voiced_frames_count < self.min_speech_onset_frames:
-                            return None
-                        return bytes(recording)
+
+                # Check end-of-speech condition:
+                # 1. Leaky consecutive silence threshold reached
+                # 2. OR sustained sliding window silence ratio >= 80% (robust against sporadic mic hiss)
+                is_silence_confirmed = (consecutive_silence >= self.silence_frames_threshold)
+                if not is_silence_confirmed and voiced_frames_count >= self.min_speech_onset_frames and len(recent_vad_decisions) >= self.silence_frames_threshold:
+                    silence_frames_in_window = sum(1 for s in recent_vad_decisions if not s)
+                    if (silence_frames_in_window / len(recent_vad_decisions)) >= 0.80:
+                        is_silence_confirmed = True
+
+                if is_silence_confirmed:
+                    if on_speech_end:
+                        on_speech_end()
+                    # Minimum duration filter: require at least 0.3s of total audio and minimum voiced frames
+                    min_bytes = int(0.3 * self.sample_rate * self.sample_width)
+                    if len(recording) < min_bytes or voiced_frames_count < self.min_speech_onset_frames:
+                        return None
+                    return bytes(recording)
 
         # Reached max command duration limit while speaking
         if speech_active and len(recording) > 0:

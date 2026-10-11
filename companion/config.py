@@ -107,8 +107,8 @@ CHANNELS = 1
 
 # --- Wake Word Detection (openWakeWord) ---
 DEFAULT_WAKE_MODEL = os.getenv("DESKBOT_WAKE_MODEL", "hey_jarvis")
-DEFAULT_WAKE_THRESHOLD = float(os.getenv("DESKBOT_WAKE_THRESHOLD", "0.48"))
-DEFAULT_MIC_GAIN = float(os.getenv("DESKBOT_MIC_GAIN", "1.2"))
+DEFAULT_WAKE_THRESHOLD = float(os.getenv("DESKBOT_WAKE_THRESHOLD", "0.38"))
+DEFAULT_MIC_GAIN = float(os.getenv("DESKBOT_MIC_GAIN", "1.5"))
 
 # --- Speech-to-Text (Faster-Whisper) ---
 DEFAULT_STT_MODEL = os.getenv("DESKBOT_STT_MODEL", "base")
@@ -120,12 +120,12 @@ MAX_CONTEXT_MESSAGES = int(os.getenv("DESKBOT_MAX_CONTEXT_MESSAGES", "8"))
 CONTEXT_TTL_SECONDS = float(os.getenv("DESKBOT_CONTEXT_TTL", "90.0"))
 
 # --- VAD & Speech Detection Parameters ---
-VAD_MODE = int(os.getenv("DESKBOT_VAD_MODE", "2"))
+VAD_MODE = int(os.getenv("DESKBOT_VAD_MODE", "3"))
 FRAME_DURATION_MS = 30
 PRE_ROLL_SECONDS = 0.35
-SILENCE_DURATION_SECONDS = 0.55
-INITIAL_SPEECH_TIMEOUT = 4.5
-MAX_COMMAND_SECONDS = 12.0
+SILENCE_DURATION_SECONDS = 0.50
+INITIAL_SPEECH_TIMEOUT = 4.0
+MAX_COMMAND_SECONDS = 8.0
 TRANSITION_WINDOW_SECONDS = 0.25
 
 # --- Debugging ---

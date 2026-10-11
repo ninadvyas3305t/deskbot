@@ -828,6 +828,23 @@ def _handle_open_app(query: Any) -> ToolResult:
     clean_app = str(query or "").strip()
     if not clean_app:
         return ToolResult(False, "Missing app name", "Please specify which app you want to open.")
+
+    # Clean compound speech artifacts if present (e.g. "Youtube? Can You Open Your Tubers")
+    if any(sep in clean_app for sep in ("?", ";", "!")) or " can you " in clean_app.lower():
+        clean_app = re.split(r"[?.!]|;\s*|\b(?:can\s+you|could\s+you|and\s+can\s+you)\b", clean_app, flags=re.IGNORECASE)[0].strip()
+
+    # Graceful fallback: If app refers to well-known web services, route to website
+    app_lower = clean_app.lower()
+    if "youtube" in app_lower or app_lower in {"yt", "youtube"}:
+        return _handle_open_website("youtube")
+    if "google" in app_lower:
+        return _handle_open_website("google")
+    if "spotify" in app_lower:
+        ok = launch_app("Spotify")
+        if ok:
+            return ToolResult(True, "Opened Spotify", "Opening Spotify.")
+        return _handle_open_website("https://open.spotify.com")
+
     ok = launch_app(clean_app)
     if ok:
         return ToolResult(True, f"Opened {clean_app}", f"Opening {clean_app}.")

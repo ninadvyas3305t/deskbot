@@ -651,10 +651,16 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
         # Guard: Never treat folders, directories, files, or documents as applications!
         if re.search(r"\b(?:folder|directory|file|documents?)\b", target, flags=re.IGNORECASE):
             return None
-        if target in {"spotify"}:
+        # Clean compound sentences / repetition artifacts (e.g. "youtube? can you open your tubers")
+        if any(sep in target for sep in ("?", ";", "!", ".")) or " can you " in target.lower():
+            target = re.split(r"[?.!]|;\s*|\b(?:can\s+you|could\s+you|and\s+can\s+you)\b", target, flags=re.IGNORECASE)[0].strip()
+        target_lower = target.lower()
+        if target_lower in {"spotify"}:
             return {"action": "spotify_open"}
-        if target in {"youtube", "yt", "google"}:
-            return {"action": "open_website", "query": target}
+        if target_lower in {"youtube", "yt", "google", "gmail", "netflix", "github", "twitter", "x"}:
+            return {"action": "open_website", "query": target_lower}
+        if "youtube" in target_lower or target_lower.startswith("yt"):
+            return {"action": "open_website", "query": "youtube"}
         if target:
             return {"action": "open_app", "query": target.title()}
 

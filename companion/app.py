@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--wake-threshold",
         type=float,
-        default=config.DEFAULT_WAKE_THRESHOLD,
+        default=None,
         help=f"Wake sensitivity threshold (default: {config.DEFAULT_WAKE_THRESHOLD})",
     )
     parser.add_argument(
@@ -94,7 +94,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mic-gain",
         type=float,
-        default=config.DEFAULT_MIC_GAIN,
+        default=None,
         help=f"Microphone gain multiplier (default: {config.DEFAULT_MIC_GAIN})",
     )
     parser.add_argument(
@@ -206,7 +206,15 @@ def main() -> int:
     port = args.port or config_mgr.get("serial_port", config.DEFAULT_PORT)
     baud = args.baud or int(config_mgr.get("baud_rate", config.DEFAULT_BAUD))
     wake_model = args.wake_model or config_mgr.get("wake_model", config.DEFAULT_WAKE_MODEL)
-    wake_threshold = args.wake_threshold or float(config_mgr.get("wake_threshold", config.DEFAULT_WAKE_THRESHOLD))
+
+    saved_thresh = float(config_mgr.get("wake_threshold", config.DEFAULT_WAKE_THRESHOLD))
+    if saved_thresh > 0.45:
+        logger.info("[CONFIG] Normalizing legacy high wake_threshold %.2f down to responsive 0.38", saved_thresh)
+        saved_thresh = 0.38
+        config_mgr.set("wake_threshold", 0.38)
+    wake_threshold = args.wake_threshold if args.wake_threshold is not None else saved_thresh
+
+    mic_gain = args.mic_gain if args.mic_gain is not None else float(config_mgr.get("mic_gain", config.DEFAULT_MIC_GAIN))
     stt_model = args.stt_model or config_mgr.get("stt_model", config.DEFAULT_STT_MODEL)
 
     lifecycle_mgr.transition_to(AppLifecycleState.INITIALIZING, "Loading AI models...")
@@ -249,7 +257,7 @@ def main() -> int:
                 wake_model=wake_model,
                 wake_threshold=wake_threshold,
                 stt_model=stt_model,
-                mic_gain=args.mic_gain,
+                mic_gain=mic_gain,
                 run_once=args.once,
                 debug=args.debug,
                 wait_for_device=True,
@@ -281,7 +289,7 @@ def main() -> int:
                     wake_model=wake_model,
                     wake_threshold=wake_threshold,
                     stt_model=stt_model,
-                    mic_gain=args.mic_gain,
+                    mic_gain=mic_gain,
                     run_once=args.once,
                     debug=args.debug,
                     wait_for_device=True,

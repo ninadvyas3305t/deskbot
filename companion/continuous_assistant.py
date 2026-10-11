@@ -137,7 +137,7 @@ def run_assistant(
             elif hasattr(wake_detector.prediction_buffer, "clear"):
                 wake_detector.prediction_buffer.clear()
 
-    def enter_idle(cooldown_seconds: float = 0.4, force_log: bool = False) -> None:
+    def enter_idle(cooldown_seconds: float = 0.25, force_log: bool = False) -> None:
         """Transition cleanly to IDLE with full buffer flushing and an acoustic refractory cooldown."""
         nonlocal idle_cooldown_until
         if state_machine.current_state != AssistantState.IDLE or force_log:
@@ -390,7 +390,6 @@ def run_assistant(
                 f"TOTAL: {total_ms:.1f} ms"
             )
             logger.info(perf_msg)
-            print(perf_msg, flush=True)
             current_wake_ms = 0.0
 
             # Post-Command Conversational Confirmation: "Is that all?"
@@ -584,15 +583,15 @@ def run_assistant(
                     logger.debug("Wake candidate score: %.2f (amp: %d, thresh: %.2f)", score, max_amp, wake_threshold)
 
                 # Responsive & reliable wake trigger:
-                # 1. Trigger immediately on strong confidence (score >= wake_threshold) with audible voice energy (amp >= 120).
-                # 2. Or trigger on sustained near-threshold confidence (score >= wake_threshold * 0.85) across 2 chunks.
-                if max_amp >= 120:
+                # 1. Trigger immediately on strong confidence (score >= wake_threshold) with audible voice energy (amp >= 100).
+                # 2. Or trigger on sustained near-threshold confidence (score >= wake_threshold * 0.78) across 2 chunks.
+                if max_amp >= 100:
                     if score >= wake_threshold:
                         detected = True
                         detected_score = score
                         consecutive_wake_hits = 0
                         break
-                    elif score >= (wake_threshold * 0.85):
+                    elif score >= (wake_threshold * 0.78):
                         consecutive_wake_hits += 1
                         if consecutive_wake_hits >= 2:
                             detected = True
