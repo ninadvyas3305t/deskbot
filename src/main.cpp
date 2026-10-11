@@ -40,15 +40,6 @@ unsigned long lastTouchTime = 0;
 unsigned long curiousUntil = 0;
 unsigned long lastInteraction = 0;
 
-enum Behavior
-{
-    IDLE,
-    LOOK_LEFT,
-    LOOK_RIGHT,
-    BLINK,
-    DOUBLE_BLINK
-};
-
 enum Mood
 {
     CALM,
@@ -56,120 +47,7 @@ enum Mood
     SLEEPY
 };
 
-Behavior currentBehavior = IDLE;
 Mood currentMood = CALM;
-
-unsigned long nextBehaviorTime = 0;
-
-void drawPupils()
-{
-    display.fillCircle(
-        40 + eyeOffsetX,
-        32 + eyeOffsetY,
-        4,
-        SSD1306_BLACK);
-
-    display.fillCircle(
-        88 + eyeOffsetX,
-        32 + eyeOffsetY,
-        4,
-        SSD1306_BLACK);
-}
-
-void drawEyesOpen()
-{
-    display.clearDisplay();
-
-    switch (currentMood)
-    {
-        case CALM:
-            display.fillRoundRect(
-                28 + eyeOffsetX,
-                20 + eyeOffsetY,
-                24,
-                24,
-                8,
-                SSD1306_WHITE);
-
-            drawPupils();
-
-            display.fillRoundRect(
-                76 + eyeOffsetX,
-                20 + eyeOffsetY,
-                24,
-                24,
-                8,
-                SSD1306_WHITE);
-
-            drawPupils();
-            break;
-
-        case CURIOUS:
-            display.fillRoundRect(
-                28 + eyeOffsetX,
-                16 + eyeOffsetY,
-                24,
-                32,
-                8,
-                SSD1306_WHITE);
-
-            drawPupils();
-
-            display.fillRoundRect(
-                76 + eyeOffsetX,
-                16 + eyeOffsetY,
-                24,
-                32,
-                8,
-                SSD1306_WHITE);
-
-            drawPupils();
-            break;
-
-        case SLEEPY:
-            display.fillRoundRect(
-                28 + eyeOffsetX,
-                28 + eyeOffsetY,
-                24,
-                12,
-                6,
-                SSD1306_WHITE);
-
-            display.fillRoundRect(
-                76 + eyeOffsetX,
-                28 + eyeOffsetY,
-                24,
-                12,
-                6,
-                SSD1306_WHITE);
-            break;
-    }
-
-    display.display();
-}
-
-void drawEyesClosed()
-{
-    display.clearDisplay();
-
-    display.fillRoundRect(
-        28 + eyeOffsetX,
-        30 + eyeOffsetY,
-        24,
-        4,
-        2,
-        SSD1306_WHITE);
-
-    display.fillRoundRect(
-        76 + eyeOffsetX,
-        30 + eyeOffsetY,
-        24,
-        4,
-        2,
-        SSD1306_WHITE);
-
-    display.display();
-}
 
 // ================= ASSISTANT UI STATES =================
 enum AssistantUIState
@@ -185,82 +63,369 @@ enum AssistantUIState
 
 AssistantUIState currentUIState = UI_IDLE;
 
-void drawStateFace(AssistantUIState state)
+// ================= BLINK TIMING & PHASES =================
+enum BlinkPhase
+{
+    BLINK_PHASE_IDLE,         // Eyes open, waiting for next blink
+    BLINK_PHASE_CLOSING,      // Squashing down (~32ms)
+    BLINK_PHASE_CLOSED,       // Slit line (~50ms)
+    BLINK_PHASE_OPENING,      // Expanding up (~32ms)
+    BLINK_PHASE_DOUBLE_PAUSE  // Brief open pause between double-blinks (~130ms)
+};
+
+BlinkPhase blinkPhase = BLINK_PHASE_IDLE;
+unsigned long nextBlinkTime = 0;
+unsigned long blinkPhaseEndTime = 0;
+bool isDoubleBlinkActive = false;
+bool isSecondBlinkDone = false;
+int blinkCounter = 0;
+
+// ================= IDLE NON-BLOCKING GLANCE =================
+enum GlanceState
+{
+    GLANCE_CENTER,
+    GLANCE_LEFT,
+    GLANCE_RIGHT
+};
+
+GlanceState glanceState = GLANCE_CENTER;
+unsigned long nextGlanceTime = 0;
+unsigned long glanceReturnTime = 0;
+
+// Helper to determine natural blink delay based on state
+unsigned long getNextBlinkDelay(AssistantUIState state)
+{
+    if (state == UI_LISTENING)
+    {
+        // Attentive state: steady 3.0 to 4.5 seconds
+        return random(3000, 4500);
+    }
+    if (state == UI_EXECUTING)
+    {
+        // Focused state: 2.8 to 4.2 seconds
+        return random(2800, 4200);
+    }
+    if (state == UI_THINKING)
+    {
+        // Thinking state: 2.5 to 4.0 seconds
+        return random(2500, 4000);
+    }
+    if (state == UI_SPEAKING)
+    {
+        // Expressive talking state: 2.2 to 3.8 seconds
+        return random(2200, 3800);
+    }
+
+    // UI_IDLE / CALM / CURIOUS / SLEEPY:
+    blinkCounter++;
+    // Occasional relaxed breath pause every 5th blink
+    if (blinkCounter % 5 == 0)
+    {
+        return random(4000, 5200);
+    }
+
+    // Standard natural blink interval: 2.0 to 3.8 seconds with modest variation
+    return random(2000, 3800);
+}
+
+bool shouldDoubleBlink(AssistantUIState state)
+{
+    // Double blinks add lively personality during IDLE / CALM / CURIOUS
+    if (state != UI_IDLE) return false;
+    if (currentMood == SLEEPY) return false;
+    return (random(100) < 18); // ~18% chance
+}
+
+void resetBlinkState()
+{
+    blinkPhase = BLINK_PHASE_IDLE;
+    isDoubleBlinkActive = false;
+    isSecondBlinkDone = false;
+    nextBlinkTime = millis() + getNextBlinkDelay(currentUIState);
+}
+
+// ================= RENDERING ENGINE =================
+// blinkStage:
+//   0 = Open eyes
+//   1 = Closing squish (~50% height)
+//   2 = Closed slit (4px height)
+//   3 = Opening recovery (~70% height)
+void renderCurrentFace(int blinkStage = 0)
 {
     display.clearDisplay();
 
-    switch (state)
+    switch (currentUIState)
     {
         case UI_IDLE:
-            display.fillRoundRect(28, 20, 24, 24, 8, SSD1306_WHITE);
-            display.fillRoundRect(76, 20, 24, 24, 8, SSD1306_WHITE);
-            display.fillCircle(40, 32, 4, SSD1306_BLACK);
-            display.fillCircle(88, 32, 4, SSD1306_BLACK);
+            switch (currentMood)
+            {
+                case CALM:
+                    if (blinkStage == 0)
+                    {
+                        // Open: 24x24 at y=20 (center Y=32)
+                        display.fillRoundRect(28 + eyeOffsetX, 20 + eyeOffsetY, 24, 24, 8, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 20 + eyeOffsetY, 24, 24, 8, SSD1306_WHITE);
+                        display.fillCircle(40 + eyeOffsetX, 32 + eyeOffsetY, 4, SSD1306_BLACK);
+                        display.fillCircle(88 + eyeOffsetX, 32 + eyeOffsetY, 4, SSD1306_BLACK);
+                    }
+                    else if (blinkStage == 1)
+                    {
+                        // Closing: 24x12 at y=26 (radius 4)
+                        display.fillRoundRect(28 + eyeOffsetX, 26 + eyeOffsetY, 24, 12, 4, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 26 + eyeOffsetY, 24, 12, 4, SSD1306_WHITE);
+                    }
+                    else if (blinkStage == 2)
+                    {
+                        // Closed slit: 24x4 at y=30 (radius 2)
+                        display.fillRoundRect(28 + eyeOffsetX, 30 + eyeOffsetY, 24, 4, 2, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 30 + eyeOffsetY, 24, 4, 2, SSD1306_WHITE);
+                    }
+                    else if (blinkStage == 3)
+                    {
+                        // Opening: 24x18 at y=23 (radius 6)
+                        display.fillRoundRect(28 + eyeOffsetX, 23 + eyeOffsetY, 24, 18, 6, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 23 + eyeOffsetY, 24, 18, 6, SSD1306_WHITE);
+                        display.fillCircle(40 + eyeOffsetX, 32 + eyeOffsetY, 3, SSD1306_BLACK);
+                        display.fillCircle(88 + eyeOffsetX, 32 + eyeOffsetY, 3, SSD1306_BLACK);
+                    }
+                    break;
+
+                case CURIOUS:
+                    if (blinkStage == 0)
+                    {
+                        // Open: 24x32 at y=16 (center Y=32)
+                        display.fillRoundRect(28 + eyeOffsetX, 16 + eyeOffsetY, 24, 32, 8, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 16 + eyeOffsetY, 24, 32, 8, SSD1306_WHITE);
+                        display.fillCircle(40 + eyeOffsetX, 32 + eyeOffsetY, 4, SSD1306_BLACK);
+                        display.fillCircle(88 + eyeOffsetX, 32 + eyeOffsetY, 4, SSD1306_BLACK);
+                    }
+                    else if (blinkStage == 1)
+                    {
+                        // Closing: 24x16 at y=24 (radius 5)
+                        display.fillRoundRect(28 + eyeOffsetX, 24 + eyeOffsetY, 24, 16, 5, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 24 + eyeOffsetY, 24, 16, 5, SSD1306_WHITE);
+                    }
+                    else if (blinkStage == 2)
+                    {
+                        // Closed: 24x4 at y=30 (radius 2)
+                        display.fillRoundRect(28 + eyeOffsetX, 30 + eyeOffsetY, 24, 4, 2, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 30 + eyeOffsetY, 24, 4, 2, SSD1306_WHITE);
+                    }
+                    else if (blinkStage == 3)
+                    {
+                        // Opening: 24x24 at y=20 (radius 7)
+                        display.fillRoundRect(28 + eyeOffsetX, 20 + eyeOffsetY, 24, 24, 7, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 20 + eyeOffsetY, 24, 24, 7, SSD1306_WHITE);
+                        display.fillCircle(40 + eyeOffsetX, 32 + eyeOffsetY, 3, SSD1306_BLACK);
+                        display.fillCircle(88 + eyeOffsetX, 32 + eyeOffsetY, 3, SSD1306_BLACK);
+                    }
+                    break;
+
+                case SLEEPY:
+                    if (blinkStage == 0)
+                    {
+                        // Open: 24x12 at y=28 (center Y=34)
+                        display.fillRoundRect(28 + eyeOffsetX, 28 + eyeOffsetY, 24, 12, 6, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 28 + eyeOffsetY, 24, 12, 6, SSD1306_WHITE);
+                    }
+                    else if (blinkStage == 1)
+                    {
+                        // Closing: 24x8 at y=30 (radius 3)
+                        display.fillRoundRect(28 + eyeOffsetX, 30 + eyeOffsetY, 24, 8, 3, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 30 + eyeOffsetY, 24, 8, 3, SSD1306_WHITE);
+                    }
+                    else if (blinkStage == 2)
+                    {
+                        // Closed: 24x4 at y=32 (radius 2)
+                        display.fillRoundRect(28 + eyeOffsetX, 32 + eyeOffsetY, 24, 4, 2, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 32 + eyeOffsetY, 24, 4, 2, SSD1306_WHITE);
+                    }
+                    else if (blinkStage == 3)
+                    {
+                        // Opening: 24x10 at y=29 (radius 4)
+                        display.fillRoundRect(28 + eyeOffsetX, 29 + eyeOffsetY, 24, 10, 4, SSD1306_WHITE);
+                        display.fillRoundRect(76 + eyeOffsetX, 29 + eyeOffsetY, 24, 10, 4, SSD1306_WHITE);
+                    }
+                    break;
+            }
             break;
 
         case UI_LISTENING:
-            // Alert / wide attentive open eyes
-            display.fillRoundRect(28, 14, 24, 34, 10, SSD1306_WHITE);
-            display.fillRoundRect(76, 14, 24, 34, 10, SSD1306_WHITE);
-            display.fillCircle(40, 31, 5, SSD1306_BLACK);
-            display.fillCircle(88, 31, 5, SSD1306_BLACK);
+            // Alert attentive eyes (center Y=31) + text
             display.setTextSize(1);
             display.setTextColor(SSD1306_WHITE);
             display.setCursor(38, 54);
             display.print("LISTENING");
+
+            if (blinkStage == 0)
+            {
+                // Open: 24x34 at y=14
+                display.fillRoundRect(28, 14, 24, 34, 10, SSD1306_WHITE);
+                display.fillRoundRect(76, 14, 24, 34, 10, SSD1306_WHITE);
+                display.fillCircle(40, 31, 5, SSD1306_BLACK);
+                display.fillCircle(88, 31, 5, SSD1306_BLACK);
+            }
+            else if (blinkStage == 1)
+            {
+                // Closing: 24x16 at y=23
+                display.fillRoundRect(28, 23, 24, 16, 5, SSD1306_WHITE);
+                display.fillRoundRect(76, 23, 24, 16, 5, SSD1306_WHITE);
+            }
+            else if (blinkStage == 2)
+            {
+                // Closed: 24x4 at y=29
+                display.fillRoundRect(28, 29, 24, 4, 2, SSD1306_WHITE);
+                display.fillRoundRect(76, 29, 24, 4, 2, SSD1306_WHITE);
+            }
+            else if (blinkStage == 3)
+            {
+                // Opening: 24x26 at y=18
+                display.fillRoundRect(28, 18, 24, 26, 8, SSD1306_WHITE);
+                display.fillRoundRect(76, 18, 24, 26, 8, SSD1306_WHITE);
+                display.fillCircle(40, 31, 4, SSD1306_BLACK);
+                display.fillCircle(88, 31, 4, SSD1306_BLACK);
+            }
             break;
 
         case UI_TRANSCRIBING:
-            // Hearing / transcribing: eyes looking up & left
-            display.fillRoundRect(28, 18, 24, 26, 8, SSD1306_WHITE);
-            display.fillRoundRect(76, 18, 24, 26, 8, SSD1306_WHITE);
-            display.fillCircle(36, 25, 4, SSD1306_BLACK);
-            display.fillCircle(84, 25, 4, SSD1306_BLACK);
+            // Hearing eyes looking up-left (center Y=31) + text
             display.setTextSize(1);
             display.setTextColor(SSD1306_WHITE);
             display.setCursor(44, 54);
             display.print("HEARING");
+
+            if (blinkStage == 0)
+            {
+                // Open: 24x26 at y=18
+                display.fillRoundRect(28, 18, 24, 26, 8, SSD1306_WHITE);
+                display.fillRoundRect(76, 18, 24, 26, 8, SSD1306_WHITE);
+                display.fillCircle(36, 25, 4, SSD1306_BLACK);
+                display.fillCircle(84, 25, 4, SSD1306_BLACK);
+            }
+            else if (blinkStage == 1)
+            {
+                display.fillRoundRect(28, 24, 24, 14, 5, SSD1306_WHITE);
+                display.fillRoundRect(76, 24, 24, 14, 5, SSD1306_WHITE);
+            }
+            else if (blinkStage == 2)
+            {
+                display.fillRoundRect(28, 29, 24, 4, 2, SSD1306_WHITE);
+                display.fillRoundRect(76, 29, 24, 4, 2, SSD1306_WHITE);
+            }
+            else if (blinkStage == 3)
+            {
+                display.fillRoundRect(28, 21, 24, 20, 6, SSD1306_WHITE);
+                display.fillRoundRect(76, 21, 24, 20, 6, SSD1306_WHITE);
+                display.fillCircle(36, 25, 3, SSD1306_BLACK);
+                display.fillCircle(84, 25, 3, SSD1306_BLACK);
+            }
             break;
 
         case UI_THINKING:
-            // Curious / thinking: one eye slightly raised
-            display.fillRoundRect(28, 14, 24, 30, 8, SSD1306_WHITE);
-            display.fillRoundRect(76, 20, 24, 24, 8, SSD1306_WHITE);
-            display.fillCircle(40, 28, 4, SSD1306_BLACK);
-            display.fillCircle(88, 32, 4, SSD1306_BLACK);
+            // Curious raised left eye (left center Y=29, right center Y=32) + text
             display.setTextSize(1);
             display.setTextColor(SSD1306_WHITE);
             display.setCursor(40, 54);
             display.print("THINKING");
+
+            if (blinkStage == 0)
+            {
+                // Left raised (24x30 at y=14), Right normal (24x24 at y=20)
+                display.fillRoundRect(28, 14, 24, 30, 8, SSD1306_WHITE);
+                display.fillRoundRect(76, 20, 24, 24, 8, SSD1306_WHITE);
+                display.fillCircle(40, 28, 4, SSD1306_BLACK);
+                display.fillCircle(88, 32, 4, SSD1306_BLACK);
+            }
+            else if (blinkStage == 1)
+            {
+                display.fillRoundRect(28, 22, 24, 14, 4, SSD1306_WHITE);
+                display.fillRoundRect(76, 26, 24, 12, 4, SSD1306_WHITE);
+            }
+            else if (blinkStage == 2)
+            {
+                display.fillRoundRect(28, 27, 24, 4, 2, SSD1306_WHITE);
+                display.fillRoundRect(76, 30, 24, 4, 2, SSD1306_WHITE);
+            }
+            else if (blinkStage == 3)
+            {
+                display.fillRoundRect(28, 18, 24, 22, 6, SSD1306_WHITE);
+                display.fillRoundRect(76, 23, 24, 18, 6, SSD1306_WHITE);
+                display.fillCircle(40, 28, 3, SSD1306_BLACK);
+                display.fillCircle(88, 32, 3, SSD1306_BLACK);
+            }
             break;
 
         case UI_EXECUTING:
-            // Focused / determined eyes
-            display.fillRoundRect(28, 24, 24, 18, 6, SSD1306_WHITE);
-            display.fillRoundRect(76, 24, 24, 18, 6, SSD1306_WHITE);
-            display.fillCircle(40, 33, 4, SSD1306_BLACK);
-            display.fillCircle(88, 33, 4, SSD1306_BLACK);
+            // Determined focused eyes (center Y=33) + text
             display.setTextSize(1);
             display.setTextColor(SSD1306_WHITE);
             display.setCursor(37, 54);
             display.print("EXECUTING");
+
+            if (blinkStage == 0)
+            {
+                // Open: 24x18 at y=24
+                display.fillRoundRect(28, 24, 24, 18, 6, SSD1306_WHITE);
+                display.fillRoundRect(76, 24, 24, 18, 6, SSD1306_WHITE);
+                display.fillCircle(40, 33, 4, SSD1306_BLACK);
+                display.fillCircle(88, 33, 4, SSD1306_BLACK);
+            }
+            else if (blinkStage == 1)
+            {
+                display.fillRoundRect(28, 28, 24, 10, 3, SSD1306_WHITE);
+                display.fillRoundRect(76, 28, 24, 10, 3, SSD1306_WHITE);
+            }
+            else if (blinkStage == 2)
+            {
+                display.fillRoundRect(28, 31, 24, 4, 2, SSD1306_WHITE);
+                display.fillRoundRect(76, 31, 24, 4, 2, SSD1306_WHITE);
+            }
+            else if (blinkStage == 3)
+            {
+                display.fillRoundRect(28, 26, 24, 14, 5, SSD1306_WHITE);
+                display.fillRoundRect(76, 26, 24, 14, 5, SSD1306_WHITE);
+                display.fillCircle(40, 33, 3, SSD1306_BLACK);
+                display.fillCircle(88, 33, 3, SSD1306_BLACK);
+            }
             break;
 
         case UI_SPEAKING:
-            // Talking / responding face: bright animated eyes with open smile
-            display.fillRoundRect(28, 16, 24, 28, 8, SSD1306_WHITE);
-            display.fillRoundRect(76, 16, 24, 28, 8, SSD1306_WHITE);
-            display.fillCircle(40, 30, 4, SSD1306_BLACK);
-            display.fillCircle(88, 30, 4, SSD1306_BLACK);
-            display.fillRoundRect(54, 38, 20, 8, 3, SSD1306_WHITE);
+            // Animated talking face (center Y=30) + mouth + text
             display.setTextSize(1);
             display.setTextColor(SSD1306_WHITE);
             display.setCursor(40, 54);
             display.print("SPEAKING");
+            display.fillRoundRect(54, 38, 20, 8, 3, SSD1306_WHITE);
+
+            if (blinkStage == 0)
+            {
+                // Open: 24x28 at y=16
+                display.fillRoundRect(28, 16, 24, 28, 8, SSD1306_WHITE);
+                display.fillRoundRect(76, 16, 24, 28, 8, SSD1306_WHITE);
+                display.fillCircle(40, 30, 4, SSD1306_BLACK);
+                display.fillCircle(88, 30, 4, SSD1306_BLACK);
+            }
+            else if (blinkStage == 1)
+            {
+                display.fillRoundRect(28, 23, 24, 14, 4, SSD1306_WHITE);
+                display.fillRoundRect(76, 23, 24, 14, 4, SSD1306_WHITE);
+            }
+            else if (blinkStage == 2)
+            {
+                display.fillRoundRect(28, 28, 24, 4, 2, SSD1306_WHITE);
+                display.fillRoundRect(76, 28, 24, 4, 2, SSD1306_WHITE);
+            }
+            else if (blinkStage == 3)
+            {
+                display.fillRoundRect(28, 19, 24, 22, 6, SSD1306_WHITE);
+                display.fillRoundRect(76, 19, 24, 22, 6, SSD1306_WHITE);
+                display.fillCircle(40, 30, 3, SSD1306_BLACK);
+                display.fillCircle(88, 30, 3, SSD1306_BLACK);
+            }
             break;
 
         case UI_ERROR:
-            // Confused / sad eyes with slanted brows
+            // Slanted brows, sad eyes, text ERROR
             display.fillRoundRect(28, 26, 24, 16, 6, SSD1306_WHITE);
             display.fillRoundRect(76, 26, 24, 16, 6, SSD1306_WHITE);
             display.fillCircle(38, 34, 3, SSD1306_BLACK);
@@ -277,119 +442,217 @@ void drawStateFace(AssistantUIState state)
     display.display();
 }
 
+// Backward-compatible wrappers
+void drawPupils()
+{
+    display.fillCircle(40 + eyeOffsetX, 32 + eyeOffsetY, 4, SSD1306_BLACK);
+    display.fillCircle(88 + eyeOffsetX, 32 + eyeOffsetY, 4, SSD1306_BLACK);
+}
+
+void drawEyesOpen()
+{
+    renderCurrentFace(0);
+}
+
+void drawEyesClosed()
+{
+    renderCurrentFace(2);
+}
+
+void drawStateFace(AssistantUIState state)
+{
+    currentUIState = state;
+    resetBlinkState();
+    renderCurrentFace(0);
+}
+
 void applyAssistantState(const String &cmd)
 {
+    AssistantUIState newState = currentUIState;
+
     if (cmd == "STATE_IDLE")
     {
-        currentUIState = UI_IDLE;
+        newState = UI_IDLE;
         currentMood = CALM;
         eyeOffsetX = 0;
         eyeOffsetY = 0;
-        drawStateFace(UI_IDLE);
+        glanceState = GLANCE_CENTER;
     }
     else if (cmd == "STATE_LISTENING")
     {
-        currentUIState = UI_LISTENING;
-        drawStateFace(UI_LISTENING);
+        newState = UI_LISTENING;
+        eyeOffsetX = 0;
+        eyeOffsetY = 0;
     }
     else if (cmd == "STATE_TRANSCRIBING")
     {
-        currentUIState = UI_TRANSCRIBING;
-        drawStateFace(UI_TRANSCRIBING);
+        newState = UI_TRANSCRIBING;
+        eyeOffsetX = 0;
+        eyeOffsetY = 0;
     }
     else if (cmd == "STATE_THINKING")
     {
-        currentUIState = UI_THINKING;
-        drawStateFace(UI_THINKING);
+        newState = UI_THINKING;
+        eyeOffsetX = 0;
+        eyeOffsetY = 0;
     }
     else if (cmd == "STATE_EXECUTING")
     {
-        currentUIState = UI_EXECUTING;
-        drawStateFace(UI_EXECUTING);
+        newState = UI_EXECUTING;
+        eyeOffsetX = 0;
+        eyeOffsetY = 0;
     }
     else if (cmd == "STATE_SPEAKING")
     {
-        currentUIState = UI_SPEAKING;
-        drawStateFace(UI_SPEAKING);
+        newState = UI_SPEAKING;
+        eyeOffsetX = 0;
+        eyeOffsetY = 0;
     }
     else if (cmd == "STATE_FOLLOW_UP")
     {
-        currentUIState = UI_LISTENING;
-        drawStateFace(UI_LISTENING);
+        newState = UI_LISTENING;
+        eyeOffsetX = 0;
+        eyeOffsetY = 0;
     }
     else if (cmd == "STATE_ERROR")
     {
-        currentUIState = UI_ERROR;
-        drawStateFace(UI_ERROR);
+        newState = UI_ERROR;
+        eyeOffsetX = 0;
+        eyeOffsetY = 0;
     }
+
+    currentUIState = newState;
+    resetBlinkState();
+    renderCurrentFace(0);
 }
 
-
-void lookTo(int targetX)
+// Non-blocking glance & mood engine for IDLE
+void updateIdleMoodAndGlance()
 {
-    while (eyeOffsetX != targetX)
+    if (currentUIState != UI_IDLE)
+        return;
+
+    unsigned long now = millis();
+
+    // Mood transitions
+    if (currentMood == CURIOUS && now > curiousUntil)
     {
-        if (eyeOffsetX < targetX)
-            eyeOffsetX++;
-        else
-            eyeOffsetX--;
-
-        drawEyesOpen();
-        delay(40);
-    }
-}
-
-void chooseBehavior()
-{
-    int r = random(100);
-
-    switch (currentMood)
-    {
-        case CALM:
-            if (r < 55)
-                currentBehavior = IDLE;
-            else if (r < 70)
-                currentBehavior = BLINK;
-            else if (r < 82)
-                currentBehavior = LOOK_LEFT;
-            else if (r < 94)
-                currentBehavior = LOOK_RIGHT;
-            else
-                currentBehavior = DOUBLE_BLINK;
-            break;
-
-        case CURIOUS:
-            if (r < 25)
-                currentBehavior = IDLE;
-            else if (r < 42)
-                currentBehavior = BLINK;
-            else if (r < 62)
-                currentBehavior = LOOK_LEFT;
-            else if (r < 82)
-                currentBehavior = LOOK_RIGHT;
-            else
-                currentBehavior = DOUBLE_BLINK;
-            break;
-
-        case SLEEPY:
-            if (r < 78)
-                currentBehavior = IDLE;
-            else
-                currentBehavior = BLINK;
-            break;
-    }
-}
-
-void chooseMood()
-{
-    int r = random(100);
-
-    if (r < 60)
         currentMood = CALM;
-    else if (r < 90)
-        currentMood = CURIOUS;
-    else
+        renderCurrentFace(0);
+    }
+    else if (currentMood == CALM && (now - lastInteraction > 30000))
+    {
         currentMood = SLEEPY;
+        renderCurrentFace(0);
+    }
+
+    // Glances only occur when eyes are open and not sleepy
+    if (blinkPhase != BLINK_PHASE_IDLE || currentMood == SLEEPY)
+        return;
+
+    if (glanceState == GLANCE_CENTER)
+    {
+        if (now >= nextGlanceTime)
+        {
+            if (random(100) < 50)
+            {
+                eyeOffsetX = -4;
+                glanceState = GLANCE_LEFT;
+            }
+            else
+            {
+                eyeOffsetX = 4;
+                glanceState = GLANCE_RIGHT;
+            }
+            glanceReturnTime = now + random(400, 700);
+            nextGlanceTime = now + random(8000, 15000);
+            renderCurrentFace(0);
+        }
+    }
+    else
+    {
+        if (now >= glanceReturnTime)
+        {
+            eyeOffsetX = 0;
+            glanceState = GLANCE_CENTER;
+            renderCurrentFace(0);
+        }
+    }
+}
+
+// Non-blocking smooth blink animation engine
+void updateFaceAnimation()
+{
+    // Do not blink in ERROR state
+    if (currentUIState == UI_ERROR)
+        return;
+
+    unsigned long now = millis();
+
+    switch (blinkPhase)
+    {
+        case BLINK_PHASE_IDLE:
+            if (now >= nextBlinkTime)
+            {
+                isDoubleBlinkActive = shouldDoubleBlink(currentUIState);
+                isSecondBlinkDone = false;
+                blinkPhase = BLINK_PHASE_CLOSING;
+                blinkPhaseEndTime = now + 32;
+                renderCurrentFace(1); // Closing squish frame
+            }
+            break;
+
+        case BLINK_PHASE_CLOSING:
+            if (now >= blinkPhaseEndTime)
+            {
+                blinkPhase = BLINK_PHASE_CLOSED;
+                blinkPhaseEndTime = now + 50;
+                renderCurrentFace(2); // Closed slit frame
+            }
+            break;
+
+        case BLINK_PHASE_CLOSED:
+            if (now >= blinkPhaseEndTime)
+            {
+                blinkPhase = BLINK_PHASE_OPENING;
+                blinkPhaseEndTime = now + 32;
+                renderCurrentFace(3); // Opening recovery frame
+            }
+            break;
+
+        case BLINK_PHASE_OPENING:
+            if (now >= blinkPhaseEndTime)
+            {
+                if (isDoubleBlinkActive && !isSecondBlinkDone)
+                {
+                    // Transition to brief open pause between double-blinks
+                    blinkPhase = BLINK_PHASE_DOUBLE_PAUSE;
+                    blinkPhaseEndTime = now + random(120, 160);
+                    renderCurrentFace(0); // Open eyes during pause
+                }
+                else
+                {
+                    // Single blink or second blink finished
+                    blinkPhase = BLINK_PHASE_IDLE;
+                    isDoubleBlinkActive = false;
+                    isSecondBlinkDone = false;
+                    nextBlinkTime = now + getNextBlinkDelay(currentUIState);
+                    renderCurrentFace(0); // Return fully open
+                }
+            }
+            break;
+
+        case BLINK_PHASE_DOUBLE_PAUSE:
+            if (now >= blinkPhaseEndTime)
+            {
+                // Trigger second blink
+                isSecondBlinkDone = true;
+                blinkPhase = BLINK_PHASE_CLOSING;
+                blinkPhaseEndTime = now + 28;
+                renderCurrentFace(1); // Closing frame
+            }
+            break;
+    }
 }
 
 // ================= MICROPHONE SETUP =================
@@ -402,8 +665,8 @@ void setupMicrophone()
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 8,
-        .dma_buf_len = 64,
+        .dma_buf_count = 12,
+        .dma_buf_len = 128,
         .use_apll = false,
         .tx_desc_auto_clear = false,
         .fixed_mclk = 0
@@ -440,6 +703,30 @@ void setupMicrophone()
 
     microphoneReady = true;
     Serial.println("Microphone initialized successfully.");
+}
+
+void checkTouchSensor()
+{
+    bool currentTouch = digitalRead(touchPin);
+    if (currentTouch && !lastTouchState && (millis() - lastTouchTime > 400))
+    {
+        lastTouchTime = millis();
+        Serial.print("\nTOUCH_TRIGGER\n");
+        Serial.flush();
+        lastInteraction = millis();
+        curiousUntil = millis() + 5000;
+
+        if (currentUIState == UI_IDLE)
+        {
+            currentMood = CURIOUS;
+            eyeOffsetX = 0;
+            eyeOffsetY = 0;
+            glanceState = GLANCE_CENTER;
+            resetBlinkState();
+            renderCurrentFace(0);
+        }
+    }
+    lastTouchState = currentTouch;
 }
 
 String serialCmdBuffer = "";
@@ -483,14 +770,7 @@ void recordAudio()
         }
 
         // Check TTP223 touch sensor
-        bool currentTouch = digitalRead(touchPin);
-        if (currentTouch && !lastTouchState && (millis() - lastTouchTime > 400))
-        {
-            lastTouchTime = millis();
-            Serial.print("\nTOUCH_TRIGGER_\n");
-            Serial.flush();
-        }
-        lastTouchState = currentTouch;
+        checkTouchSensor();
 
         // Non-blocking serial command processor
         while (Serial.available())
@@ -517,6 +797,10 @@ void recordAudio()
                 serialCmdBuffer += c;
             }
         }
+
+        // Non-blocking face animation and glance updates during streaming
+        updateIdleMoodAndGlance();
+        updateFaceAnimation();
     }
 
     Serial.flush();
@@ -581,98 +865,18 @@ void setup()
 
     randomSeed(micros());
     lastInteraction = millis();
+    nextBlinkTime = millis() + random(1800, 2800);
+    nextGlanceTime = millis() + random(6000, 10000);
 
     setupMicrophone();
 
-    drawEyesOpen();
+    renderCurrentFace(0);
 }
 
 void loop()
 {
     handleSerialCommand();
-
-    // When an active assistant state is showing, hold the face and skip idle behaviors
-    if (currentUIState != UI_IDLE)
-        return;
-
-    if (currentMood == CURIOUS && millis() > curiousUntil)
-    {
-        currentMood = CALM;
-        drawEyesOpen();
-    }
-
-    if (currentMood == CALM && millis() - lastInteraction > 30000)
-    {
-        currentMood = SLEEPY;
-        drawEyesOpen();
-    }
-
-    bool currentTouch = digitalRead(touchPin);
-
-    // ================= TOUCH =================
-    if (currentTouch && !lastTouchState && (millis() - lastTouchTime > 400))
-    {
-        lastTouchTime = millis();
-        Serial.print("\nTOUCH_TRIGGER\n");
-        Serial.flush();
-        lastInteraction = millis();
-        curiousUntil = millis() + 5000;
-
-        if (currentMood == SLEEPY)
-        {
-            currentMood = CURIOUS;
-            drawEyesOpen();
-        }
-        else
-        {
-            currentMood = CURIOUS;
-            drawEyesOpen();
-        }
-    }
-    lastTouchState = currentTouch;
-
-    if (millis() < nextBehaviorTime)
-        return;
-
-    chooseBehavior();
-
-    switch (currentBehavior)
-    {
-        case IDLE:
-            lookTo(0);
-            nextBehaviorTime = millis() + random(2500, 7000);
-            break;
-
-        case LOOK_LEFT:
-            lookTo(-4);
-            delay(random(250, 500));
-            lookTo(0);
-            nextBehaviorTime = millis() + random(2000, 5000);
-            break;
-
-        case LOOK_RIGHT:
-            lookTo(4);
-            delay(random(250, 500));
-            lookTo(0);
-            nextBehaviorTime = millis() + random(2000, 5000);
-            break;
-
-        case BLINK:
-            drawEyesClosed();
-            delay(random(80, 140));
-            drawEyesOpen();
-            nextBehaviorTime = millis() + random(3000, 7000);
-            break;
-
-        case DOUBLE_BLINK:
-            drawEyesClosed();
-            delay(random(80, 120));
-            drawEyesOpen();
-            delay(random(100, 180));
-            drawEyesClosed();
-            delay(random(80, 120));
-            drawEyesOpen();
-            nextBehaviorTime = millis() + random(5000, 9000);
-            break;
-    }
+    checkTouchSensor();
+    updateIdleMoodAndGlance();
+    updateFaceAnimation();
 }
