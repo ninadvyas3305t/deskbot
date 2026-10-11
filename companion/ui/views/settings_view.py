@@ -159,19 +159,61 @@ class SettingsView(QWidget):
 
         layout.addWidget(engine_card)
 
-        # --- Section 3: Ambient Screen-Edge Illumination ---
-        overlay_card = self._create_card("3. Ambient Screen-Edge Illumination")
+        # --- Section 3: Desktop Edge Illumination ---
+        overlay_card = self._create_card("3. Desktop Edge Illumination")
         overlay_layout = QVBoxLayout(overlay_card)
-        overlay_layout.setSpacing(10)
+        overlay_layout.setSpacing(12)
 
-        self.chk_overlay = QCheckBox("Enable Google Lens-inspired screen-edge perimeter lighting on voice trigger")
-        self.chk_overlay.setStyleSheet("color: #FFFFFF; font-size: 13px;")
+        self.chk_overlay = QCheckBox("Enable Edge Illumination (Google-inspired screen perimeter glow)")
+        self.chk_overlay.setStyleSheet("color: #FFFFFF; font-size: 13px; font-weight: 500;")
         self.chk_overlay.toggled.connect(self._on_overlay_toggled)
         overlay_layout.addWidget(self.chk_overlay)
 
+        # Glow Intensity row
+        row_glow = QHBoxLayout()
+        lbl_glow = QLabel("Glow Intensity:")
+        lbl_glow.setStyleSheet(f"font-size: 13px; color: {COLOR_TEXT_SECONDARY}; min-width: 140px;")
+        self.slider_glow = QSlider(Qt.Horizontal)
+        self.slider_glow.setRange(20, 100)
+        self.lbl_glow_val = QLabel("70%")
+        self.lbl_glow_val.setStyleSheet(f"font-size: 12px; color: {COLOR_ACCENT_CYAN}; min-width: 40px;")
+        self.slider_glow.valueChanged.connect(self._on_glow_changed)
+        row_glow.addWidget(lbl_glow)
+        row_glow.addWidget(self.slider_glow, stretch=1)
+        row_glow.addWidget(self.lbl_glow_val)
+        overlay_layout.addLayout(row_glow)
+
+        # Edge Thickness row
+        row_thick = QHBoxLayout()
+        lbl_thick = QLabel("Edge Thickness:")
+        lbl_thick.setStyleSheet(f"font-size: 13px; color: {COLOR_TEXT_SECONDARY}; min-width: 140px;")
+        self.slider_thickness = QSlider(Qt.Horizontal)
+        self.slider_thickness.setRange(12, 48)
+        self.lbl_thickness_val = QLabel("24px")
+        self.lbl_thickness_val.setStyleSheet(f"font-size: 12px; color: {COLOR_ACCENT_CYAN}; min-width: 40px;")
+        self.slider_thickness.valueChanged.connect(self._on_thickness_changed)
+        row_thick.addWidget(lbl_thick)
+        row_thick.addWidget(self.slider_thickness, stretch=1)
+        row_thick.addWidget(self.lbl_thickness_val)
+        overlay_layout.addLayout(row_thick)
+
+        # Animation Speed row
+        row_speed = QHBoxLayout()
+        lbl_speed = QLabel("Animation Speed:")
+        lbl_speed.setStyleSheet(f"font-size: 13px; color: {COLOR_TEXT_SECONDARY}; min-width: 140px;")
+        self.slider_speed = QSlider(Qt.Horizontal)
+        self.slider_speed.setRange(40, 200)
+        self.lbl_speed_val = QLabel("1.0x")
+        self.lbl_speed_val.setStyleSheet(f"font-size: 12px; color: {COLOR_ACCENT_CYAN}; min-width: 40px;")
+        self.slider_speed.valueChanged.connect(self._on_speed_changed)
+        row_speed.addWidget(lbl_speed)
+        row_speed.addWidget(self.slider_speed, stretch=1)
+        row_speed.addWidget(self.lbl_speed_val)
+        overlay_layout.addLayout(row_speed)
+
         lbl_over_note = QLabel(
-            "Displays a subtle cyan/violet pulse along display borders during wake, listening, and thinking states. "
-            "Engineered to be completely non-intrusive and transparent to screenshots."
+            "Produces a subtle, crystal-clear, multicolored luminous glass perimeter glow inspired by Google. "
+            "Click-through, non-focus-stealing, and completely transparent at screen center."
         )
         lbl_over_note.setStyleSheet(f"font-size: 12px; color: {COLOR_TEXT_MUTED};")
         lbl_over_note.setWordWrap(True)
@@ -292,6 +334,18 @@ class SettingsView(QWidget):
         self.entry_vision.setText(str(self.config_mgr.get("vision_model", "meta/llama-3.2-11b-vision-instruct")))
 
         self.chk_overlay.setChecked(bool(self.config_mgr.get("screen_overlay_enabled", True)))
+        glow = float(self.config_mgr.get("overlay_glow_intensity", 0.70))
+        self.slider_glow.setValue(int(glow * 100))
+        self.lbl_glow_val.setText(f"{int(glow * 100)}%")
+
+        thickness = int(self.config_mgr.get("overlay_edge_thickness", 24))
+        self.slider_thickness.setValue(thickness)
+        self.lbl_thickness_val.setText(f"{thickness}px")
+
+        speed = float(self.config_mgr.get("overlay_animation_speed", 1.0))
+        self.slider_speed.setValue(int(speed * 100))
+        self.lbl_speed_val.setText(f"{speed:.1f}x")
+
         self.chk_dev_mode.setChecked(bool(self.config_mgr.get("developer_mode", False)))
         self.chk_autostart.setChecked(is_autostart_enabled())
         self.chk_tts.setChecked(bool(self.config_mgr.get("tts_enabled", True)))
@@ -349,6 +403,24 @@ class SettingsView(QWidget):
         if overlay:
             overlay.set_enabled(checked)
 
+    def _on_glow_changed(self, val: int) -> None:
+        self.lbl_glow_val.setText(f"{val}%")
+        overlay = get_screen_overlay()
+        if overlay:
+            overlay.set_glow_intensity(val / 100.0)
+
+    def _on_thickness_changed(self, val: int) -> None:
+        self.lbl_thickness_val.setText(f"{val}px")
+        overlay = get_screen_overlay()
+        if overlay:
+            overlay.set_edge_thickness(val)
+
+    def _on_speed_changed(self, val: int) -> None:
+        self.lbl_speed_val.setText(f"{val / 100.0:.1f}x")
+        overlay = get_screen_overlay()
+        if overlay:
+            overlay.set_animation_speed(val / 100.0)
+
     def _save_settings(self) -> None:
         key = self.entry_api.text().strip()
         if key:
@@ -360,6 +432,9 @@ class SettingsView(QWidget):
             "stt_model": self.combo_stt.currentText(),
             "vision_model": self.entry_vision.text().strip(),
             "screen_overlay_enabled": self.chk_overlay.isChecked(),
+            "overlay_glow_intensity": round(self.slider_glow.value() / 100.0, 2),
+            "overlay_edge_thickness": self.slider_thickness.value(),
+            "overlay_animation_speed": round(self.slider_speed.value() / 100.0, 2),
             "developer_mode": self.chk_dev_mode.isChecked(),
             "tts_enabled": self.chk_tts.isChecked(),
         }

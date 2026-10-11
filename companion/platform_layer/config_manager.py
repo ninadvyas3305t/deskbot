@@ -30,6 +30,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "baud_rate": 921600,
     "debug": False,
     "first_run_completed": False,
+    "screen_overlay_enabled": True,
+    "overlay_glow_intensity": 0.70,
+    "overlay_edge_thickness": 24,
+    "overlay_animation_speed": 1.0,
 }
 
 
