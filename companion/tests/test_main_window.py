@@ -19,7 +19,8 @@ def qapp():
 
 def test_main_window_structure(qapp):
     win = DeskBotMainWindow()
-    assert win.windowTitle() == "DeskBot — Hardware AI Companion"
+    assert "DeskBot" in win.windowTitle()
+    assert "Companion" in win.windowTitle()
     assert win.stack.count() == 4
     assert win.width() >= 900
     assert win.height() >= 600

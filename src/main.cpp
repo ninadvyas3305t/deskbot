@@ -4,6 +4,15 @@
 #include <Adafruit_SSD1306.h>
 #include "driver/i2s.h"
 
+#include "audio_dsp.h"
+#include "embedded_ml.h"
+#include "protocol.h"
+#include "state_machine.h"
+
+AudioDSP audioDSP;
+EmbeddedML embeddedML;
+DeviceStateMachine deviceStateMachine;
+
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
@@ -711,6 +720,7 @@ void checkTouchSensor()
     if (currentTouch && !lastTouchState && (millis() - lastTouchTime > 400))
     {
         lastTouchTime = millis();
+        Protocol::sendTouchTrigger();
         Serial.print("\nTOUCH_TRIGGER\n");
         Serial.flush();
         lastInteraction = millis();
@@ -808,6 +818,110 @@ void recordAudio()
     Serial.println("STREAM_END");
 }
 
+void recordAndClassifyCommand()
+{
+    if (!microphoneReady)
+    {
+        deviceStateMachine.resetToIdle();
+        return;
+    }
+
+    Protocol::sendAudioStreamStart();
+    Serial.println("STREAM_START");
+    Serial.flush();
+
+    embeddedML.resetCommandContext();
+
+    unsigned long captureStartTime = millis();
+    unsigned long lastSpeechTime = millis();
+    bool speechEnded = false;
+    bool activeStreaming = true;
+
+    while (activeStreaming && (millis() - captureStartTime < 6500) && !speechEnded)
+    {
+        size_t bytesRead = 0;
+        i2s_read(MIC_I2S_PORT, micSamples, sizeof(micSamples), &bytesRead, pdMS_TO_TICKS(15));
+
+        if (bytesRead > 0)
+        {
+            int count = bytesRead / sizeof(int32_t);
+            float melFrame[DSP_NUM_MEL_BINS];
+
+            for (int i = 0; i < count; i++)
+            {
+                int16_t pcmSample = (int16_t)(micSamples[i] >> 16);
+
+                // Stream PCM sample to desktop companion
+                Serial.write((uint8_t *)&pcmSample, sizeof(pcmSample));
+
+                if (audioDSP.processSample(pcmSample, melFrame))
+                {
+                    embeddedML.feedMelFrame(melFrame);
+
+                    if (audioDSP.getCurrentRMS() > 0.040f)
+                    {
+                        lastSpeechTime = millis();
+                    }
+                }
+            }
+        }
+
+        // Detect end of utterance: after at least 1.0s, silence for >600ms
+        if ((millis() - captureStartTime > 1000) && (millis() - lastSpeechTime > 600))
+        {
+            speechEnded = true;
+        }
+
+        checkTouchSensor();
+
+        // Check if companion sent commands during stream
+        while (Serial.available())
+        {
+            char c = (char)Serial.read();
+            if (c == '\n' || c == '\r')
+            {
+                serialCmdBuffer.trim();
+                if (serialCmdBuffer.length() > 0)
+                {
+                    if (serialCmdBuffer == "STOP_STREAM")
+                    {
+                        activeStreaming = false;
+                    }
+                    else if (serialCmdBuffer.startsWith("STATE_"))
+                    {
+                        applyAssistantState(serialCmdBuffer);
+                    }
+                    serialCmdBuffer = "";
+                }
+            }
+            else if (serialCmdBuffer.length() < 32)
+            {
+                serialCmdBuffer += c;
+            }
+        }
+
+        updateFaceAnimation();
+    }
+
+    Serial.flush();
+    Serial.println();
+    Serial.println("STREAM_END");
+    Protocol::sendAudioStreamEnd();
+
+    // Run embedded ML command classification on captured utterance
+    CommandInferenceResult cmdRes = embeddedML.runCommandClassification();
+    if (cmdRes.command != CMD_NONE)
+    {
+        Protocol::sendCommandClassified(cmdRes.commandName, cmdRes.confidence, cmdRes.latencyMicros);
+    }
+    else
+    {
+        Protocol::sendUnrestrictedSpeech(cmdRes.confidence);
+    }
+
+    deviceStateMachine.transitionTo(DEV_STATE_WAITING_COMPANION, "Utterance captured");
+}
+
 void handleSerialCommand()
 {
     while (Serial.available())
@@ -827,6 +941,26 @@ void handleSerialCommand()
                 else if (serialCmdBuffer.startsWith("STATE_"))
                 {
                     applyAssistantState(serialCmdBuffer);
+                    if (serialCmdBuffer == "STATE_IDLE")
+                    {
+                        deviceStateMachine.resetToIdle();
+                    }
+                    else if (serialCmdBuffer == "STATE_SPEAKING")
+                    {
+                        deviceStateMachine.transitionTo(DEV_STATE_SPEAKING);
+                    }
+                    else if (serialCmdBuffer == "STATE_THINKING")
+                    {
+                        deviceStateMachine.transitionTo(DEV_STATE_PROCESSING);
+                    }
+                }
+                else if (serialCmdBuffer == "PING")
+                {
+                    Protocol::sendStatus(deviceStateMachine.getStateName(), esp_get_free_heap_size(), millis() / 1000);
+                }
+                else if (serialCmdBuffer == "RESET_WAKE")
+                {
+                    embeddedML.resetWakeContext();
                 }
                 serialCmdBuffer = "";
             }
@@ -853,8 +987,6 @@ void setup()
 
     pinMode(touchPin, INPUT_PULLDOWN);
 
-    Serial.println("DeskBot Face Engine Started (Speaker Audio Disabled)");
-
     Wire.begin(8, 9);
     Wire.setClock(400000); // 400kHz Fast I2C for non-blocking OLED rendering
 
@@ -870,6 +1002,14 @@ void setup()
 
     setupMicrophone();
 
+    // Initialize On-Device DSP and Embedded Machine Learning engines
+    audioDSP.init();
+    embeddedML.init();
+    deviceStateMachine.resetToIdle();
+
+    // Announce device identity and capabilities over serial
+    Protocol::sendDeviceReady("2.0.0", "ESP32-S3-N8", false, 8);
+
     renderCurrentFace(0);
 }
 
@@ -877,6 +1017,61 @@ void loop()
 {
     handleSerialCommand();
     checkTouchSensor();
+    deviceStateMachine.update();
+
+    // 1. On-device Wake Word Detection when IDLE or WAITING_COMPANION
+    if (microphoneReady &&
+        (deviceStateMachine.getCurrentState() == DEV_STATE_IDLE ||
+         deviceStateMachine.getCurrentState() == DEV_STATE_WAITING_COMPANION))
+    {
+        size_t bytesRead = 0;
+        esp_err_t err = i2s_read(MIC_I2S_PORT, micSamples, sizeof(micSamples), &bytesRead, pdMS_TO_TICKS(10));
+        if (err == ESP_OK && bytesRead > 0)
+        {
+            int count = bytesRead / sizeof(int32_t);
+            float melFrame[DSP_NUM_MEL_BINS];
+
+            for (int i = 0; i < count; i++)
+            {
+                int16_t pcmSample = (int16_t)(micSamples[i] >> 16);
+                if (audioDSP.processSample(pcmSample, melFrame))
+                {
+                    embeddedML.feedMelFrame(melFrame);
+
+                    WakeInferenceResult wakeRes = embeddedML.runWakeInference();
+                    if (wakeRes.detected)
+                    {
+                        // Emit framed wake-word event
+                        Protocol::sendWakeDetected(wakeRes.confidence, wakeRes.latencyMicros);
+
+                        // Immediate responsive transition
+                        deviceStateMachine.transitionTo(DEV_STATE_COMMAND_CAPTURE, "Embedded wake word detected");
+                        applyAssistantState("STATE_LISTENING");
+                        lastInteraction = millis();
+                        curiousUntil = millis() + 6000;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Command Capture & Embedded Inference
+    if (deviceStateMachine.getCurrentState() == DEV_STATE_COMMAND_CAPTURE)
+    {
+        recordAndClassifyCommand();
+    }
+
+    // 3. Periodic framed Heartbeat (every 12 seconds)
+    static unsigned long lastHeartbeatTime = 0;
+    static uint32_t heartbeatSeq = 0;
+    if (millis() - lastHeartbeatTime > 12000)
+    {
+        lastHeartbeatTime = millis();
+        Protocol::sendHeartbeat(heartbeatSeq++, millis());
+    }
+
+    // 4. Non-blocking face animation and glance
     updateIdleMoodAndGlance();
     updateFaceAnimation();
 }

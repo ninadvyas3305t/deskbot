@@ -39,6 +39,9 @@ class DeskBotBridge(QObject):
     # Activity log stream
     activity_logged = Signal(dict)  # structured event dict for the Activity page
 
+    # Connectivity signals
+    connectivity_changed = Signal(str, str)  # (status: "ONLINE"|"OFFLINE"|"DEGRADED", details: str)
+
     # Overlay control signals
     overlay_visibility_toggled = Signal(bool)
     overlay_state_synced = Signal(str)
@@ -153,6 +156,15 @@ class DeskBotBridge(QObject):
             status="success" if connected else "warning",
         )
 
+    def notify_connectivity(self, status: str, details: str = "") -> None:
+        self.connectivity_changed.emit(status, details)
+        self.log_activity(
+            category="NETWORK",
+            title=f"Connectivity: {status}",
+            details=details or f"Mode: {status}",
+            status="success" if status == "ONLINE" else ("warning" if status == "DEGRADED" else "info"),
+        )
+
     def log_activity(self, category: str, title: str, details: str = "", status: str = "info") -> None:
         event = {
             "timestamp": time.time(),
@@ -177,6 +189,14 @@ def get_ui_bridge() -> DeskBotBridge:
         _GLOBAL_BRIDGE = DeskBotBridge()
     sys.modules["_deskbot_global_ui_bridge"] = _GLOBAL_BRIDGE
     return _GLOBAL_BRIDGE
+
+
+def _safe_get_bridge() -> Optional[DeskBotBridge]:
+    """Safely return UI bridge instance across modules."""
+    try:
+        return get_ui_bridge()
+    except Exception:
+        return None
 
 
 # Alias both module paths to avoid duplicate class identities across import styles

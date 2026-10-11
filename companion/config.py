@@ -6,6 +6,11 @@ import os
 import sys
 from pathlib import Path
 
+# --- Application Version & Build Metadata ---
+APP_VERSION = "2.0.0"
+BUILD_ID = "20261012-v2.0-hybrid-edge"
+BUILD_DATE = "2026-10-12"
+
 # --- Paths ---
 COMPANION_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = COMPANION_DIR.parent

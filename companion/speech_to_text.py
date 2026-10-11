@@ -108,11 +108,23 @@ def is_hallucination(text: str) -> bool:
 _MODEL_CACHE: dict[str, Any] = {}
 
 
+def is_model_cached_locally(model_name: str = DEFAULT_MODEL) -> bool:
+    """Check if the Faster-Whisper model is available in the local cache without network access."""
+    if model_name in _MODEL_CACHE:
+        return True
+    try:
+        from faster_whisper import WhisperModel
+        WhisperModel(model_name, device="cpu", compute_type="int8", local_files_only=True)
+        return True
+    except Exception:
+        return False
+
+
 def get_whisper_model(
     model_name: str = DEFAULT_MODEL,
     cpu_threads: int = 4,
 ) -> Any:
-    """Return a cached WhisperModel singleton for the requested model."""
+    """Return a cached WhisperModel singleton, loading from local files first without network calls."""
     if model_name not in _MODEL_CACHE:
         try:
             from faster_whisper import WhisperModel
@@ -122,13 +134,47 @@ def get_whisper_model(
                 "Run: python -m pip install -r requirements.txt"
             ) from error
 
+        # 1. Attempt loading strictly from local cache (zero network calls)
+        try:
+            _MODEL_CACHE[model_name] = WhisperModel(
+                model_name,
+                device="cpu",
+                compute_type="int8",
+                cpu_threads=cpu_threads,
+                local_files_only=True,
+            )
+            return _MODEL_CACHE[model_name]
+        except Exception:
+            pass
+
+        # 2. If not found in local cache, verify if online before downloading
+        try:
+            from connectivity import is_offline
+            offline = is_offline()
+        except Exception:
+            offline = False
+
+        if offline:
+            raise RuntimeError(
+                f"Faster-Whisper model '{model_name}' is not found in the local cache and internet access is unavailable. "
+                "Please connect to the internet once while launching DeskBot so the model files can be downloaded."
+            )
+
         print(f"Loading Whisper model ({model_name})...", flush=True)
-        _MODEL_CACHE[model_name] = WhisperModel(
-            model_name,
-            device="cpu",
-            compute_type="int8",
-            cpu_threads=cpu_threads,
-        )
+        try:
+            _MODEL_CACHE[model_name] = WhisperModel(
+                model_name,
+                device="cpu",
+                compute_type="int8",
+                cpu_threads=cpu_threads,
+                local_files_only=False,
+            )
+        except Exception as download_err:
+            raise RuntimeError(
+                f"Failed to load or download Faster-Whisper model '{model_name}': {download_err}. "
+                "Please check your internet connection."
+            ) from download_err
+
     return _MODEL_CACHE[model_name]
 
 

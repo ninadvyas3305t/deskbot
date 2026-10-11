@@ -191,5 +191,53 @@ class TestSpeechDetector(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestAudioEngineEventFraming(unittest.TestCase):
+    def setUp(self):
+        from audio.audio_engine import AudioEngine
+        self.engine = AudioEngine(port="/dev/null", baud_rate=115200)
+
+    def test_clean_audio_unmodified(self):
+        pcm = b"\x00\x01\x02\x03\x04\x05"
+        processed = self.engine._process_events(pcm)
+        self.assertEqual(processed, pcm)
+        self.assertFalse(self.engine.has_embedded_wake())
+        self.assertIsNone(self.engine.get_embedded_command())
+
+    def test_embedded_wake_detected(self):
+        payload = b"\x00\x00[EVENT:WAKE_DETECTED:confidence=0.88]\x01\x02"
+        processed = self.engine._process_events(payload)
+        self.assertEqual(len(processed) % 2, 0)
+        self.assertTrue(self.engine.has_embedded_wake())
+        
+        # Verify clear
+        self.engine.clear_embedded_wake()
+        self.assertFalse(self.engine.has_embedded_wake())
+
+    def test_embedded_command_classified(self):
+        payload = b"[EVENT:COMMAND_CLASSIFIED:action=cancel:confidence=0.95]"
+        processed = self.engine._process_events(payload)
+        self.assertEqual(len(processed) % 2, 0)
+        cmd = self.engine.get_embedded_command()
+        self.assertEqual(cmd, "cancel")
+
+        # Verify clear
+        self.engine.clear_embedded_command()
+        self.assertIsNone(self.engine.get_embedded_command())
+
+    def test_device_ready_event(self):
+        payload = b"[EVENT:DEVICE_READY:version=2.0.0:dsp=mfe16:ml=conv1d]"
+        self.engine._process_events(payload)
+        info = self.engine.get_device_info()
+        self.assertEqual(info.get("version"), "2.0.0")
+        self.assertEqual(info.get("dsp"), "mfe16")
+        self.assertEqual(info.get("ml"), "conv1d")
+
+    def test_touch_trigger_event(self):
+        payload = b"[EVENT:TOUCH_TRIGGER:action=wake]"
+        self.engine._process_events(payload)
+        self.assertTrue(self.engine.has_touch_trigger())
+
+
 if __name__ == "__main__":
     unittest.main()
+

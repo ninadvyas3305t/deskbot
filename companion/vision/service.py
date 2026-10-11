@@ -100,7 +100,31 @@ def perform_screen_analysis(
             data=cached.to_dict(),
         )
 
-    # 2. Get active window metadata for supplementary context
+    # 2. Check connectivity status before attempting capture or cloud API
+    analyzer = get_vision_analyzer()
+    try:
+        from vision.analyzer import MockVisionAnalyzer
+        is_mock = isinstance(analyzer, MockVisionAnalyzer)
+    except Exception:
+        is_mock = False
+
+    conn_mgr = None
+    if not is_mock:
+        try:
+            from connectivity import get_connectivity_manager
+            conn_mgr = get_connectivity_manager()
+        except Exception:
+            conn_mgr = None
+
+        if conn_mgr and conn_mgr.is_offline():
+            logger.info("Screen analysis requested while offline. Declining online vision API call.")
+            return ToolResult(
+                success=False,
+                message="Screen analysis is not available offline.",
+                response_text="I need an internet connection to analyze what's on your screen. Screen analysis is not available offline.",
+            )
+
+    # 3. Get active window metadata for supplementary context
     window_data: Dict[str, Any] = {}
     try:
         from tools.developer_tools import get_active_window
@@ -110,7 +134,7 @@ def perform_screen_analysis(
     except Exception as win_err:
         logger.debug("Could not inspect active window for vision context: %s", win_err)
 
-    # 3. Capture screen on-demand
+    # 4. Capture screen on-demand
     try:
         capture = capture_screen(
             max_dimension=config.VISION_MAX_DIMENSION,
@@ -122,7 +146,7 @@ def perform_screen_analysis(
         spoken = "I was unable to capture your screen. Please check system permissions."
         return ToolResult(success=False, message=err_msg, response_text=spoken)
 
-    # 4. Perform multimodal vision analysis
+    # 5. Perform multimodal vision analysis
     analyzer = get_vision_analyzer()
     try:
         analysis = analyzer.analyze(
@@ -130,7 +154,11 @@ def perform_screen_analysis(
             user_query=clean_query,
             window_context=window_data,
         )
+        if conn_mgr:
+            conn_mgr.report_api_success()
     except Exception as vision_err:
+        if conn_mgr:
+            conn_mgr.report_api_failure(vision_err)
         logger.error("Vision analysis failed: %s", vision_err)
         err_str = str(vision_err)
         if "NVIDIA_API_KEY" in err_str:

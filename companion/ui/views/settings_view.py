@@ -20,27 +20,55 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from platform_layer.autostart import is_autostart_enabled, is_autostart_supported, set_autostart
-from platform_layer.config_manager import get_config_manager
-from platform_layer.credentials import get_credential_store
-from platform_layer.permissions import (
-    has_microphone_permission,
-    has_screen_capture_permission,
-    open_microphone_settings,
-    open_screen_recording_settings,
-)
-from ui.bridge import DeskBotBridge, get_ui_bridge
-from ui.edge_overlay import get_screen_overlay
-from ui.theme import (
-    COLOR_ACCENT_CYAN,
-    COLOR_ACCENT_MINT,
-    COLOR_BORDER,
-    COLOR_SURFACE,
-    COLOR_SURFACE_ELEVATED,
-    COLOR_TEXT_MUTED,
-    COLOR_TEXT_PRIMARY,
-    COLOR_TEXT_SECONDARY,
-)
+try:
+    import config
+except ImportError:
+    from companion import config
+
+try:
+    from platform_layer.autostart import is_autostart_enabled, is_autostart_supported, set_autostart
+    from platform_layer.config_manager import get_config_manager
+    from platform_layer.credentials import get_credential_store
+    from platform_layer.permissions import (
+        has_microphone_permission,
+        has_screen_capture_permission,
+        open_microphone_settings,
+        open_screen_recording_settings,
+    )
+    from ui.bridge import DeskBotBridge, get_ui_bridge
+    from ui.edge_overlay import get_screen_overlay
+    from ui.theme import (
+        COLOR_ACCENT_CYAN,
+        COLOR_ACCENT_MINT,
+        COLOR_BORDER,
+        COLOR_SURFACE,
+        COLOR_SURFACE_ELEVATED,
+        COLOR_TEXT_MUTED,
+        COLOR_TEXT_PRIMARY,
+        COLOR_TEXT_SECONDARY,
+    )
+except (ImportError, ModuleNotFoundError):
+    from companion.platform_layer.autostart import is_autostart_enabled, is_autostart_supported, set_autostart
+    from companion.platform_layer.config_manager import get_config_manager
+    from companion.platform_layer.credentials import get_credential_store
+    from companion.platform_layer.permissions import (
+        has_microphone_permission,
+        has_screen_capture_permission,
+        open_microphone_settings,
+        open_screen_recording_settings,
+    )
+    from companion.ui.bridge import DeskBotBridge, get_ui_bridge
+    from companion.ui.edge_overlay import get_screen_overlay
+    from companion.ui.theme import (
+        COLOR_ACCENT_CYAN,
+        COLOR_ACCENT_MINT,
+        COLOR_BORDER,
+        COLOR_SURFACE,
+        COLOR_SURFACE_ELEVATED,
+        COLOR_TEXT_MUTED,
+        COLOR_TEXT_PRIMARY,
+        COLOR_TEXT_SECONDARY,
+    )
 
 
 class SettingsView(QWidget):
@@ -284,6 +312,41 @@ class SettingsView(QWidget):
         opts_layout.addWidget(self.chk_tts)
 
         layout.addWidget(opts_card)
+
+        # --- Section 6: About DeskBot & Build Information ---
+        about_card = self._create_card("6. About DeskBot & System Build")
+        about_layout = QVBoxLayout(about_card)
+        about_layout.setSpacing(10)
+
+        app_ver = getattr(config, "APP_VERSION", "2.0.0")
+        build_id = getattr(config, "BUILD_ID", "20261012-v2.0-hybrid-edge")
+        build_date = getattr(config, "BUILD_DATE", "2026-10-12")
+
+        info_rows = [
+            ("Application Version:", f"v{app_ver} (Production Edition)"),
+            ("Build Identifier:", build_id),
+            ("Build Release Date:", build_date),
+            ("System Architecture:", "Hybrid Edge AI (ESP32-S3 On-Device ML + Local Speech + Cloud/Local Intelligence)"),
+            ("Installed Bundle Target:", "/Applications/DeskBot.app"),
+            ("Hardware Target:", "ESP32-S3 DevKitC-1-N8 (16kHz I2S Mic, SSD1306 OLED, TTP223 Touch)"),
+        ]
+
+        for label_text, val_text in info_rows:
+            r = QHBoxLayout()
+            lbl_k = QLabel(label_text)
+            lbl_k.setStyleSheet(f"font-size: 13px; color: {COLOR_TEXT_SECONDARY}; min-width: 170px;")
+            lbl_v = QLabel(val_text)
+            is_highlight = "Build" in label_text or "Version" in label_text
+            lbl_v.setStyleSheet(
+                f"font-size: 13px; color: {COLOR_ACCENT_CYAN if is_highlight else COLOR_TEXT_PRIMARY}; "
+                f"font-weight: {'600' if is_highlight else '400'};"
+            )
+            lbl_v.setWordWrap(True)
+            r.addWidget(lbl_k)
+            r.addWidget(lbl_v, stretch=1)
+            about_layout.addLayout(r)
+
+        layout.addWidget(about_card)
 
         # Save Button Row
         save_row = QHBoxLayout()

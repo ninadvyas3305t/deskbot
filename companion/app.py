@@ -330,12 +330,20 @@ def main() -> int:
 
     lifecycle_mgr.transition_to(AppLifecycleState.INITIALIZING, "Loading AI models...")
 
+    from connectivity import get_connectivity_manager
+    conn_mgr = get_connectivity_manager()
+    conn_mgr.start_monitoring(interval_seconds=15)
+
     stop_event = threading.Event()
     tray: DeskBotTray | None = None
 
     def request_shutdown() -> None:
         logger.info("[APP] Shutdown signal received.")
         stop_event.set()
+        try:
+            conn_mgr.stop_monitoring()
+        except Exception:
+            pass
         if tray:
             tray.stop()
 

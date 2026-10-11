@@ -20,6 +20,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+try:
+    import config
+except ImportError:
+    from companion import config
+
 from ui.bridge import DeskBotBridge, get_ui_bridge
 from ui.edge_overlay import get_screen_overlay, initialize_screen_overlay
 from ui.icon import create_tray_icon_image
@@ -50,7 +55,7 @@ class DeskBotMainWindow(QMainWindow):
         self.on_shutdown = on_shutdown
         self.bridge: DeskBotBridge = get_ui_bridge()
 
-        self.setWindowTitle("DeskBot — Hardware AI Companion")
+        self.setWindowTitle(f"DeskBot v{config.APP_VERSION} — Hybrid Edge AI Companion")
         self.resize(980, 660)
         self.setMinimumSize(900, 600)
         self.setStyleSheet(APPLICATION_STYLESHEET)
@@ -61,6 +66,7 @@ class DeskBotMainWindow(QMainWindow):
         self._build_ui()
         self._setup_tray()
         self._connect_signals()
+        self._init_connectivity_state()
 
     def _build_ui(self) -> None:
         central_widget = QWidget(self)
@@ -90,8 +96,8 @@ class DeskBotMainWindow(QMainWindow):
         brand_box.addStretch()
         s_layout.addLayout(brand_box)
 
-        lbl_version = QLabel("Hardware Edition • v2.0")
-        lbl_version.setStyleSheet(f"font-size: 10px; color: {COLOR_TEXT_MUTED}; margin-bottom: 12px;")
+        lbl_version = QLabel(f"Hybrid Edge Edition • v{config.APP_VERSION}\nBuild {config.BUILD_ID}")
+        lbl_version.setStyleSheet(f"font-size: 9px; color: {COLOR_TEXT_MUTED}; margin-bottom: 12px;")
         s_layout.addWidget(lbl_version)
 
         # Navigation Buttons (Clean geometric typography)
@@ -259,6 +265,48 @@ class DeskBotMainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.bridge.device_status_changed.connect(self._on_device_status_changed)
         self.bridge.state_changed.connect(self._on_state_changed)
+        self.bridge.connectivity_changed.connect(self._on_connectivity_changed)
+
+    def _init_connectivity_state(self) -> None:
+        """Query current connectivity status and reflect in header pill."""
+        try:
+            from connectivity import get_connectivity_manager
+            conn_mgr = get_connectivity_manager()
+            self._update_connectivity_pill(conn_mgr.state.value, "Initial status")
+        except Exception:
+            pass
+
+    def _on_connectivity_changed(self, status: str, details: str) -> None:
+        self._update_connectivity_pill(status, details)
+
+    def _update_connectivity_pill(self, status: str, details: str) -> None:
+        clean_status = (status or "ONLINE").upper()
+        if clean_status == "ONLINE":
+            self.pill_cloud.setText("● Cloud AI Online")
+            self.pill_cloud.setStyleSheet(
+                "background-color: rgba(0, 229, 255, 0.10); color: #00E5FF; "
+                "border: 1px solid rgba(0, 229, 255, 0.28); "
+                "border-radius: 11px; padding: 3px 12px; font-size: 11px; font-weight: 500;"
+            )
+            self.pill_cloud.setToolTip(details or "NVIDIA NIM / Nemotron Cloud Intelligence Active")
+        elif clean_status == "OFFLINE":
+            self.pill_cloud.setText("○ Offline Mode")
+            self.pill_cloud.setStyleSheet(
+                "background-color: rgba(22, 29, 45, 0.75); color: #8B9BB4; "
+                "border: 1px solid rgba(255, 255, 255, 0.08); "
+                "border-radius: 11px; padding: 3px 12px; font-size: 11px; font-weight: 500;"
+            )
+            self.pill_cloud.setToolTip(details or "No Internet Connection — Local speech recognition & deterministic control active")
+        elif clean_status == "DEGRADED":
+            self.pill_cloud.setText("⚠ Cloud Degraded")
+            self.pill_cloud.setStyleSheet(
+                "background-color: rgba(255, 171, 0, 0.12); color: #FFAB00; "
+                "border: 1px solid rgba(255, 171, 0, 0.28); "
+                "border-radius: 11px; padding: 3px 12px; font-size: 11px; font-weight: 500;"
+            )
+            self.pill_cloud.setToolTip(details or "Cloud AI API failing or timing out — Local fallback active")
+        else:
+            self.pill_cloud.setText(f"● {clean_status}")
 
     def _on_device_status_changed(self, connected: bool, port: str, description: str) -> None:
         if connected:

@@ -248,29 +248,45 @@ def run_assistant(
                 state_machine.on_direct_answer(spoken_response)
                 result = ToolResult(True, "Direct answer", spoken_response)
             elif action == "web_search":
-                # Step 1: Live information retrieval via search tool
-                action_desc = get_action_description(intent)
-                state_machine.transition_to(AssistantState.EXECUTING, context=action_desc)
-                t0_tool = time.perf_counter()
-                result = execute_intent(intent)
-                tool_ms = (time.perf_counter() - t0_tool) * 1000.0
-                state_machine.on_tool(action, result.success, result.message)
+                try:
+                    from connectivity import is_offline
+                    offline = is_offline()
+                except Exception:
+                    offline = False
 
-                # Step 2: Answer synthesis via AI reasoning layer
-                state_machine.transition_to(AssistantState.THINKING)
-                search_results = result.data if isinstance(result.data, list) else []
-                search_query = str(query or clean_transcript)
-                context_prompt = conversation_context.get_context_for_prompt()
-                t0_resp = time.perf_counter()
-                synthesized_answer = synthesize_web_answer(
-                    user_query=clean_transcript,
-                    search_query=search_query,
-                    results=search_results,
-                    context_prompt=context_prompt,
-                )
-                response_ms = (time.perf_counter() - t0_resp) * 1000.0
-                spoken_response = synthesized_answer
-                state_machine.on_response(spoken_response)
+                if offline:
+                    result = ToolResult(
+                        success=False,
+                        message="Web search requires an internet connection.",
+                        response_text="I cannot search the web while offline. Please connect to the internet to search for live information.",
+                    )
+                    state_machine.on_tool(action, False, result.message)
+                    spoken_response = result.response_text
+                    state_machine.on_response(spoken_response)
+                else:
+                    # Step 1: Live information retrieval via search tool
+                    action_desc = get_action_description(intent)
+                    state_machine.transition_to(AssistantState.EXECUTING, context=action_desc)
+                    t0_tool = time.perf_counter()
+                    result = execute_intent(intent)
+                    tool_ms = (time.perf_counter() - t0_tool) * 1000.0
+                    state_machine.on_tool(action, result.success, result.message)
+
+                    # Step 2: Answer synthesis via AI reasoning layer
+                    state_machine.transition_to(AssistantState.THINKING)
+                    search_results = result.data if isinstance(result.data, list) else []
+                    search_query = str(query or clean_transcript)
+                    context_prompt = conversation_context.get_context_for_prompt()
+                    t0_resp = time.perf_counter()
+                    synthesized_answer = synthesize_web_answer(
+                        user_query=clean_transcript,
+                        search_query=search_query,
+                        results=search_results,
+                        context_prompt=context_prompt,
+                    )
+                    response_ms = (time.perf_counter() - t0_resp) * 1000.0
+                    spoken_response = synthesized_answer
+                    state_machine.on_response(spoken_response)
             elif action == "screen_analysis":
                 # Visual Screen Intelligence & Code Understanding
                 action_desc = get_action_description(intent)
@@ -549,6 +565,57 @@ def run_assistant(
             if time.monotonic() < idle_cooldown_until:
                 _ = audio_engine.read_frame(timeout=0.05)
                 wake_pcm_buffer.clear()
+                continue
+
+            # Check On-Device Embedded Wake-Word Detection from ESP32-S3!
+            if audio_engine.has_embedded_wake():
+                audio_engine.clear_embedded_wake()
+                logger.info("[HARDWARE_WAKE] ESP32-S3 detected wake word on-device!")
+                state_machine.on_wake_word(score=0.92)
+                reset_wake_scores()
+
+                # Check if ESP32 also pre-classified an embedded command on-device
+                embedded_cmd = audio_engine.get_embedded_command()
+                if embedded_cmd:
+                    audio_engine.clear_embedded_command()
+                    logger.info("[EMBEDDED_CMD] Fast-pathing on-device classified command: %s", embedded_cmd)
+                    if embedded_cmd == "CMD_CANCEL":
+                        speak_and_settle("Cancelled.")
+                        enter_idle()
+                        continue
+                    elif embedded_cmd == "CMD_STATUS":
+                        from command_executor import execute_intent
+                        res = execute_intent({"action": "system_info"})
+                        speak_and_settle(res.response_text or "System status checked.")
+                        enter_idle()
+                        continue
+
+                # Capture subsequent command utterance from user
+                captured_pcm = speech_detector.capture_utterance(
+                    read_frame_fn=lambda: audio_engine.read_frame(timeout=0.5),
+                    ring_buffer=audio_engine.ring_buffer,
+                    on_speech_start=state_machine.on_speech_start,
+                    on_speech_end=state_machine.on_speech_end,
+                    initial_timeout=7.0,
+                    in_wake_transition=True,
+                )
+                if not captured_pcm:
+                    state_machine.log("LISTENING", "No speech detected following embedded wake word.")
+                    enter_idle(cooldown_seconds=0.3)
+                    if run_once:
+                        return 0
+                    continue
+
+                try:
+                    process_utterance(captured_pcm, wake_ms=4.0)
+                except Exception as cmd_error:
+                    state_machine.handle_error_and_recover(f"Command processing error: {cmd_error}")
+                    enter_idle()
+
+                if run_once:
+                    return 0
+
+                enter_idle()
                 continue
 
             frame = audio_engine.read_frame(timeout=0.5)

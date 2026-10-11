@@ -27,9 +27,10 @@ class AudioEngine:
         frame_bytes: int = 960,  # 30ms at 16kHz 16-bit mono
         ring_buffer_duration: float = 2.0,
         wait_for_device: bool = False,
+        baud_rate: Optional[int] = None,
     ):
         self.port = port
-        self.baud = baud
+        self.baud = baud_rate if baud_rate is not None else baud
         self.sample_rate = sample_rate
         self.sample_width = sample_width
         self.frame_bytes = frame_bytes
@@ -55,6 +56,17 @@ class AudioEngine:
         self._last_touch_time: float = 0.0
         self._touch_debounce_seconds: float = 0.6
         self._chunk_buffer = bytearray()
+
+        # On-Device Embedded ML Event State
+        self._embedded_wake_detected = False
+        self._embedded_wake_confidence: float = 0.0
+        self._last_embedded_wake_time: float = 0.0
+        self._embedded_command: Optional[str] = None
+        self._embedded_command_confidence: float = 0.0
+        self._embedded_lock = threading.Lock()
+        self._device_info: dict = {}
+        self._last_heartbeat_time: float = 0.0
+
         import atexit
         atexit.register(self.stop)
 
@@ -177,6 +189,151 @@ class AudioEngine:
             "  -> Hint: If your computer went to sleep or the board froze, press the physical 'RST' button on the ESP32 or reconnect the USB cable."
         )
 
+    def _handle_hardware_event(self, event_type: str, params: dict) -> None:
+        """Process structured event emitted by ESP32-S3."""
+        logger.debug("[HARDWARE_EVENT] %s: %s", event_type, params)
+        if event_type == "WAKE_DETECTED":
+            try:
+                conf = float(params.get("confidence", 0.85))
+            except ValueError:
+                conf = 0.85
+            with self._embedded_lock:
+                self._embedded_wake_detected = True
+                self._embedded_wake_confidence = conf
+                self._last_embedded_wake_time = time.monotonic()
+            logger.info("[HARDWARE_WAKE] ESP32 on-device wake detected (confidence=%.3f)", conf)
+        elif event_type == "COMMAND_CLASSIFIED":
+            action = str(params.get("action", ""))
+            try:
+                conf = float(params.get("confidence", 0.85))
+            except ValueError:
+                conf = 0.85
+            with self._embedded_lock:
+                self._embedded_command = action
+                self._embedded_command_confidence = conf
+            logger.info("[HARDWARE_CMD] ESP32 classified command: %s (confidence=%.3f)", action, conf)
+        elif event_type == "DEVICE_READY":
+            logger.info("[HARDWARE_READY] ESP32-S3 firmware %s (%s)", params.get("version", "2.0"), params.get("board", "ESP32-S3"))
+            self._device_info.update(params)
+        elif event_type == "TOUCH_TRIGGER":
+            with self._touch_lock:
+                self._touch_detected = True
+        elif event_type == "HEARTBEAT":
+            self._last_heartbeat_time = time.monotonic()
+
+    def _process_events(self, raw_bytes: bytes) -> bytes:
+        """Parse structured hardware event markers ([EVENT:...], TOUCH_TRIGGER) and strip cleanly."""
+        # 1. Handle legacy or direct TOUCH_TRIGGER marker
+        if b"TOUCH_TRIGGER" in raw_bytes:
+            now = time.monotonic()
+            with self._touch_lock:
+                if (now - self._last_touch_time) >= self._touch_debounce_seconds:
+                    self._last_touch_time = now
+                    self._touch_detected = True
+
+            while b"TOUCH_TRIGGER" in raw_bytes:
+                pos = raw_bytes.find(b"TOUCH_TRIGGER")
+                start = pos
+                while start > 0 and raw_bytes[start - 1 : start] in (b"\n", b"\r"):
+                    start -= 1
+                end = pos + len(b"TOUCH_TRIGGER")
+                while end < len(raw_bytes) and raw_bytes[end : end + 1] in (b"\n", b"\r", b"_"):
+                    end += 1
+
+                before = raw_bytes[:start]
+                after = raw_bytes[end:]
+                if len(before) % 2 != 0:
+                    before = before[:-1]
+                if len(after) % 2 != 0:
+                    after = after[1:]
+                raw_bytes = before + after
+
+        # 2. Handle structured [EVENT:...] markers
+        while b"[EVENT:" in raw_bytes:
+            start_pos = raw_bytes.find(b"[EVENT:")
+            end_bracket = raw_bytes.find(b"]", start_pos)
+            if end_bracket == -1:
+                event_line = raw_bytes[start_pos:]
+                end_pos = len(raw_bytes)
+            else:
+                event_line = raw_bytes[start_pos : end_bracket + 1]
+                end_pos = end_bracket + 1
+                while end_pos < len(raw_bytes) and raw_bytes[end_pos : end_pos + 1] in (b"\n", b"\r"):
+                    end_pos += 1
+
+            try:
+                ev_str = event_line.decode("utf-8", errors="replace").strip("[]\r\n ")
+                parts = ev_str.split(":")
+                if len(parts) >= 2 and parts[0] == "EVENT":
+                    event_type = parts[1]
+                    params = {}
+                    for p in parts[2:]:
+                        if "=" in p:
+                            k, v = p.split("=", 1)
+                            params[k] = v
+                        else:
+                            params[p] = True
+                    self._handle_hardware_event(event_type, params)
+            except Exception as ev_err:
+                logger.debug("Error parsing hardware event: %s", ev_err)
+
+            start = start_pos
+            while start > 0 and raw_bytes[start - 1 : start] in (b"\n", b"\r"):
+                start -= 1
+
+            before = raw_bytes[:start]
+            after = raw_bytes[end_pos:]
+            if len(before) % 2 != 0:
+                before = before[:-1]
+            if len(after) % 2 != 0:
+                after = after[1:]
+            raw_bytes = before + after
+
+        # 3. Handle STREAM_START and STREAM_END markers
+        for marker in (b"STREAM_START", b"STREAM_END"):
+            while marker in raw_bytes:
+                pos = raw_bytes.find(marker)
+                start = pos
+                while start > 0 and raw_bytes[start - 1 : start] in (b"\n", b"\r"):
+                    start -= 1
+                end = pos + len(marker)
+                while end < len(raw_bytes) and raw_bytes[end : end + 1] in (b"\n", b"\r"):
+                    end += 1
+                before = raw_bytes[:start]
+                after = raw_bytes[end:]
+                if len(before) % 2 != 0:
+                    before = before[:-1]
+                if len(after) % 2 != 0:
+                    after = after[1:]
+                raw_bytes = before + after
+
+        return raw_bytes
+
+    def has_embedded_wake(self) -> bool:
+        """Return True if ESP32 detected the wake-word on-device."""
+        with self._embedded_lock:
+            return self._embedded_wake_detected
+
+    def clear_embedded_wake(self) -> None:
+        """Clear embedded wake-word flag."""
+        with self._embedded_lock:
+            self._embedded_wake_detected = False
+
+    def get_embedded_command(self) -> Optional[str]:
+        """Return on-device classified command if present."""
+        with self._embedded_lock:
+            return self._embedded_command
+
+    def clear_embedded_command(self) -> None:
+        """Clear on-device classified command."""
+        with self._embedded_lock:
+            self._embedded_command = None
+
+    def get_device_info(self) -> dict:
+        """Return hardware metadata reported by device."""
+        with self._embedded_lock:
+            return dict(self._device_info)
+
     def _reader_loop(self) -> None:
         """Background thread continuously pumping PCM bytes from serial into RingBuffer and frame queue."""
         while self._running:
@@ -189,34 +346,7 @@ class AudioEngine:
                 if not raw_bytes:
                     continue
 
-                # Intercept hardware TTP223 touch sensor marker from ESP32
-                if b"TOUCH_TRIGGER" in raw_bytes:
-                    now = time.monotonic()
-                    with self._touch_lock:
-                        if (now - self._last_touch_time) >= self._touch_debounce_seconds:
-                            self._last_touch_time = now
-                            self._touch_detected = True
-
-                    while b"TOUCH_TRIGGER" in raw_bytes:
-                        pos = raw_bytes.find(b"TOUCH_TRIGGER")
-                        start = pos
-                        while start > 0 and raw_bytes[start - 1 : start] in (b"\n", b"\r"):
-                            start -= 1
-                        end = pos + len(b"TOUCH_TRIGGER")
-                        while end < len(raw_bytes) and raw_bytes[end : end + 1] in (b"\n", b"\r", b"_"):
-                            end += 1
-
-                        before = raw_bytes[:start]
-                        after = raw_bytes[end:]
-
-                        # Align 'before' to 16-bit boundary (drop odd trailing byte)
-                        if len(before) % 2 != 0:
-                            before = before[:-1]
-                        # Align 'after' so 16-bit PCM word phase is strictly maintained
-                        if len(after) % 2 != 0:
-                            after = after[1:]
-
-                        raw_bytes = before + after
+                raw_bytes = self._process_events(raw_bytes)
 
                 if not raw_bytes:
                     continue
@@ -358,6 +488,11 @@ class AudioEngine:
                 self._touch_detected = False
                 return True
             return False
+
+    def has_touch_trigger(self) -> bool:
+        """Check if a touch trigger is currently pending without consuming it."""
+        with self._touch_lock:
+            return self._touch_detected
 
     def clear_touch(self) -> None:
         """Clear any pending touch trigger."""

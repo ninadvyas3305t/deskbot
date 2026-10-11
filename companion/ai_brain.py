@@ -159,7 +159,7 @@ def _get_api_key() -> Optional[str]:
 
 
 def create_client() -> OpenAI:
-    """Create the NVIDIA API client."""
+    """Create the NVIDIA API client with a bounded timeout."""
     api_key = _get_api_key()
 
     if not api_key:
@@ -170,6 +170,7 @@ def create_client() -> OpenAI:
     return OpenAI(
         base_url=BASE_URL,
         api_key=api_key,
+        timeout=10.0,
     )
 
 
@@ -754,19 +755,71 @@ def understand(command: str, context_prompt: str = "") -> str:
 
 
 def understand_intent(command: str, context_prompt: str = "") -> dict | None:
-    """Send voice command to Nemotron, parse JSON, and validate against intent schema.
+    """Send voice command to Nemotron or route locally if offline / degraded.
 
-    Returns valid intent dict on success, or fallback heuristic intent, or None on failure.
+    Returns valid intent dict on success, fallback heuristic intent, or graceful explanatory response.
     """
     try:
+        from connectivity import get_connectivity_manager
+        conn_mgr = get_connectivity_manager()
+    except Exception:
+        conn_mgr = None
+
+    # 1. Offline Mode handling
+    if conn_mgr and conn_mgr.is_offline():
+        # Check optional local LLM if installed and enabled
+        try:
+            from assistant.local_llm import get_local_llm_provider
+            local_llm = get_local_llm_provider()
+            if local_llm and local_llm.is_available():
+                resp = local_llm.generate(prompt=command)
+                if resp:
+                    return {"action": "direct_answer", "response": resp}
+        except Exception:
+            pass
+
+        # Try deterministic local heuristics
+        fallback = extract_json_intent("", command)
+        if fallback:
+            valid, _ = validate_intent(fallback)
+            if valid:
+                return fallback
+
+        # Natural offline response explaining local capabilities
+        return {
+            "action": "direct_answer",
+            "response": (
+                "I can handle basic computer commands offline, but I need an internet "
+                "connection or a local AI model for that request."
+            ),
+        }
+
+    # 2. Online or Degraded Mode: Attempt cloud AI reasoning
+    try:
         raw_result = understand(command, context_prompt=context_prompt)
+        if conn_mgr:
+            conn_mgr.report_api_success()
     except Exception as error:
+        if conn_mgr:
+            conn_mgr.report_api_failure(error)
+
         # Check if fallback local heuristics can answer
         fallback = extract_json_intent("", command)
         if fallback:
             valid, _ = validate_intent(fallback)
             if valid:
                 return fallback
+
+        # Check optional local LLM
+        try:
+            from assistant.local_llm import get_local_llm_provider
+            local_llm = get_local_llm_provider()
+            if local_llm and local_llm.is_available():
+                resp = local_llm.generate(prompt=command)
+                if resp:
+                    return {"action": "direct_answer", "response": resp}
+        except Exception:
+            pass
 
         if not _get_api_key():
             logger.warning("NVIDIA_API_KEY is not set. Cloud AI reasoning is disabled.")
@@ -776,7 +829,13 @@ def understand_intent(command: str, context_prompt: str = "") -> dict | None:
             }
 
         logger.error("AI brain API request failed: %s", error)
-        return None
+        return {
+            "action": "direct_answer",
+            "response": (
+                "I'm having trouble connecting to the cloud AI service right now. "
+                "I can still run local commands like opening apps, calculations, time, or taking screenshots."
+            ),
+        }
 
     parsed = extract_json_intent(raw_result, command)
     if not parsed:
