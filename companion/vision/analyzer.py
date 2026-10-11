@@ -88,8 +88,56 @@ class VisionAnalyzer(abc.ABC):
         pass
 
 
+def _fix_concatenated_words(text: str) -> str:
+    """Split common fused preposition/pronoun/determiner token concatenation artifacts."""
+    if not text:
+        return ""
+    pattern = re.compile(
+        r"\b(on|in|of|at|to|for|with|from|by|about|under|over)"
+        r"(your|the|this|that|these|those|my|our)\b",
+        re.IGNORECASE,
+    )
+    def repl(m: re.Match) -> str:
+        w1, w2 = m.group(1), m.group(2)
+        return f"{w1} {w2}"
+
+    cleaned = pattern.sub(repl, text)
+
+    aux_pattern = re.compile(
+        r"\b(is|are|was|were)(currently|showing|displaying|running)\b",
+        re.IGNORECASE,
+    )
+    cleaned = aux_pattern.sub(lambda m: f"{m.group(1)} {m.group(2)}", cleaned)
+
+    subj_pattern = re.compile(
+        r"\b(you|they|we)(are|have|can|will)\b",
+        re.IGNORECASE,
+    )
+    cleaned = subj_pattern.sub(lambda m: f"{m.group(1)} {m.group(2)}", cleaned)
+    return cleaned
+
+
+def _deduplicate_consecutive_sentences(text: str) -> str:
+    """Remove consecutive duplicate sentences that can occur during LLM completion."""
+    if not text:
+        return ""
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    if len(sentences) <= 1:
+        return text
+
+    deduped: List[str] = []
+    for s in sentences:
+        s_clean = s.strip()
+        if not s_clean:
+            continue
+        if deduped and s_clean.lower().rstrip(".!?") == deduped[-1].strip().lower().rstrip(".!?"):
+            continue
+        deduped.append(s_clean)
+    return " ".join(deduped)
+
+
 def _clean_tts_text(text: str) -> str:
-    """Clean markdown artifacts from text so it sounds natural when spoken."""
+    """Clean markdown artifacts, token fusion typos, and metadata from text so it sounds natural when spoken."""
     if not text:
         return ""
     # Strip markdown bold/italics
@@ -99,22 +147,108 @@ def _clean_tts_text(text: str) -> str:
     cleaned = re.sub(r"[`]+", "", cleaned)
     cleaned = re.sub(r"(?:^|\s)#+\s*", " ", cleaned)
 
-    # Strip bullet characters
-    # Strip leading conversational chat filler
+    # Strip leading field labels if any leaked into the text
+    cleaned = re.sub(
+        r"^(?:spoken[ _\-]?response|summary|answer)\s*:\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # Strip conversational filler prefixes
     cleaned = re.sub(
         r"^(?:answer:\s*|sure,?\s*(?:i\s+can\s+help\s+(?:you\s+)?with\s+that\.?\s*|here\s+(?:is|are)[^.:]*[:.]\s*)?|certainly!?,?\s*|based\s+on\s+(?:the\s+)?(?:screen(?:shot)?|image)[^.:]*[:.]\s*|in\s+(?:this\s+)?(?:image|screenshot)[^.:]*[:.]\s*)",
         "",
         cleaned,
         flags=re.IGNORECASE,
     ).strip()
-    cleaned = cleaned.strip("'\"").strip()
+
+    # Strip quotation marks (including curly/smart quotes)
+    cleaned = cleaned.strip("\"'“”‘’").strip()
+
+    # Fix word/token concatenation artifacts (e.g. 'onyour' -> 'on your')
+    cleaned = _fix_concatenated_words(cleaned)
+
+    # Remove consecutive duplicate sentences
+    cleaned = _deduplicate_consecutive_sentences(cleaned)
+
+    # Normalize whitespace
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
 
+def _normalize_key(raw_k: str) -> Optional[str]:
+    """Map arbitrary field names from model text to canonical VisionAnalysis keys."""
+    k = raw_k.lower().replace("-", " ").replace("_", " ").strip()
+    if "spoken" in k or "speech" in k or "voice" in k or k == "answer":
+        return "spoken_response"
+    if "summary" in k:
+        return "summary"
+    if "code" in k or "detail" in k:
+        return "code_details"
+    if "issue" in k or "error" in k or "bug" in k:
+        return "visible_issues"
+    if "uncertain" in k:
+        return "uncertainties"
+    if "content" in k:
+        return "content_type"
+    if "lang" in k:
+        return "language"
+    if "readab" in k:
+        return "readability"
+    return None
+
+
+def _parse_key_value_blocks(text: str) -> Dict[str, str]:
+    """Parse key-value / YAML-style formatted text into a canonical field dictionary."""
+    fields: Dict[str, List[str]] = {}
+    current_key: Optional[str] = None
+
+    for line in text.splitlines():
+        trimmed = line.strip()
+        if not trimmed:
+            continue
+
+        clean_line = trimmed.replace("**", "").replace("__", "")
+        unmarked = re.sub(r"^[-*#>\s]+", "", clean_line).strip()
+
+        # Check for Key: Value (e.g. Content Type: mixed, Spoken Response: "...")
+        m_field = re.match(r"^([a-zA-Z _\-]+)\s*[:=\-]\s*(.*)$", unmarked)
+        if m_field:
+            norm_k = _normalize_key(m_field.group(1))
+            if norm_k:
+                current_key = norm_k
+                if norm_k not in fields:
+                    fields[norm_k] = []
+                val = m_field.group(2).strip()
+                if val:
+                    fields[norm_k].append(val)
+                continue
+
+        # Check for Header Only (e.g. "### Spoken Response" or "Summary:")
+        m_hdr = re.match(r"^([a-zA-Z _\-]+)\s*[:?]?$", unmarked)
+        if m_hdr:
+            norm_k = _normalize_key(m_hdr.group(1))
+            if norm_k:
+                current_key = norm_k
+                if norm_k not in fields:
+                    fields[norm_k] = []
+                continue
+
+        if current_key:
+            fields[current_key].append(trimmed)
+
+    result: Dict[str, str] = {}
+    for k, lines in fields.items():
+        combined = " ".join(lines).strip()
+        combined = combined.strip("\"'“”‘’").strip()
+        result[k] = combined
+
+    return result
 
 
 def _parse_vision_response(raw_text: str, user_query: str = "") -> VisionAnalysis:
-    """Parse JSON response from vision model, with robust fallback extractors."""
+    """Parse JSON or key-value response from vision model, with robust fallback extractors."""
     clean_text = raw_text.strip()
     clean_text = re.sub(r"^```(?:json)?\s*", "", clean_text, flags=re.IGNORECASE)
     clean_text = re.sub(r"\s*```$", "", clean_text)
@@ -163,8 +297,50 @@ def _parse_vision_response(raw_text: str, user_query: str = "") -> VisionAnalysi
         except Exception:
             pass
 
-    # 3. Plaintext fallback if model returned conversational text instead of JSON
-    spoken_fallback = _clean_tts_text(clean_text)
+    # 3. Key-Value / YAML-style parsing (e.g. Llama 3.2 Vision returning structured keys)
+    kv_fields = _parse_key_value_blocks(clean_text)
+    if kv_fields and ("spoken_response" in kv_fields or "summary" in kv_fields or "content_type" in kv_fields):
+        spoken_raw = kv_fields.get("spoken_response", "")
+        summary_raw = kv_fields.get("summary", "")
+        spoken = _clean_tts_text(spoken_raw)
+        if not spoken:
+            spoken = _clean_tts_text(summary_raw)
+        summary = summary_raw or spoken
+
+        detected_lang = kv_fields.get("language", "unknown")
+        if detected_lang.lower() in ("unknown", "none", "n/a"):
+            for cand in ("python", "javascript", "typescript", "c++", "cpp", "rust", "golang", "java", "html", "css", "bash", "swift", "kotlin", "sql"):
+                if re.search(rf"\b{cand}\b", clean_text, flags=re.IGNORECASE):
+                    detected_lang = cand
+                    break
+
+        return VisionAnalysis(
+            content_type=kv_fields.get("content_type", "mixed"),
+            language=detected_lang,
+            readability=kv_fields.get("readability", "clear"),
+            summary=summary,
+            code_details=kv_fields.get("code_details", ""),
+            visible_issues=kv_fields.get("visible_issues", "none"),
+            uncertainties=kv_fields.get("uncertainties", "none"),
+            spoken_response=spoken or "I analyzed your screen.",
+            raw_model_response=raw_text,
+        )
+
+    # 4. Plaintext fallback if model returned conversational text instead of structured format
+    clean_lines = []
+    meta_line_pattern = re.compile(
+        r"^(?:[-*#>\s]*)"
+        r"(content[ _\-]?type|language|programming[ _\-]?language|readability|code[ _\-]?details|visible[ _\-]?issues|uncertainties|uncertainty)"
+        r"\s*[:=\-]",
+        re.IGNORECASE,
+    )
+    for line in clean_text.splitlines():
+        if meta_line_pattern.match(line.strip().replace("**", "").replace("__", "")):
+            continue
+        clean_lines.append(line)
+    sanitized_text = "\n".join(clean_lines)
+
+    spoken_fallback = _clean_tts_text(sanitized_text)
 
     # Heuristic language extraction
     detected_lang = "unknown"
@@ -175,8 +351,6 @@ def _parse_vision_response(raw_text: str, user_query: str = "") -> VisionAnalysi
             if re.search(rf"\b{cand}\b", clean_text, flags=re.IGNORECASE):
                 detected_lang = cand
                 break
-
-
 
     # Heuristic content type
     lower_text = clean_text.lower()
@@ -266,7 +440,8 @@ class NvidiaVisionAnalyzer(VisionAnalyzer):
             f"{context_hint}"
             f"User Question: \"{query_text}\"\n\n"
             f"Carefully examine the screen image above. Identify the visible code, programming language, "
-            f"logic, error tracebacks, or tutorial explanations. Answer the user's question directly in spoken_response."
+            f"logic, error tracebacks, or tutorial explanations. Answer the user's question directly in spoken_response. "
+            f"Ensure spoken_response is 2 to 4 natural sentences suitable for text-to-speech."
         )
 
         messages = [
@@ -294,7 +469,7 @@ class NvidiaVisionAnalyzer(VisionAnalyzer):
                 model=self.model,
                 messages=messages,
                 temperature=0.1,
-                max_tokens=250,
+                max_tokens=450,
             )
             raw_content = response.choices[0].message.content or ""
         except Exception as primary_err:

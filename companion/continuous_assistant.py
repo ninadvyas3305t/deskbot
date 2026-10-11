@@ -147,11 +147,11 @@ def run_assistant(
         reset_wake_scores()
         idle_cooldown_until = time.monotonic() + cooldown_seconds
 
-    def speak_and_settle(text: str) -> None:
+    def speak_and_settle(text: str, context: Optional[str] = None) -> None:
         """Speak text via TTS, block until completion, and settle acoustics to prevent mic bleed."""
         if not config.TTS_ENABLED or not text:
             return
-        state_machine.transition_to(AssistantState.SPEAKING, context=text)
+        state_machine.transition_to(AssistantState.SPEAKING, context=context or "Speaking...")
         try:
             speak(text, block=True)
         except Exception as tts_err:
@@ -396,7 +396,7 @@ def run_assistant(
             follow_up_prompt = "Is that all?"
             state_machine.on_follow_up(follow_up_prompt)
 
-            speak_and_settle(follow_up_prompt)
+            speak_and_settle(follow_up_prompt, context=follow_up_prompt)
 
             fu_pcm = speech_detector.capture_utterance(
                 read_frame_fn=lambda: audio_engine.read_frame(timeout=0.5),

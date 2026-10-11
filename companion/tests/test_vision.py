@@ -139,6 +139,96 @@ class TestVisionAnalyzerParsing(unittest.TestCase):
         self.assertNotIn("`", cleaned)
         self.assertEqual(cleaned, "Here is bold text, italic text, Header and code_sample().")
 
+    def test_parse_key_value_llama_vision_response(self):
+        """Test parsing key-value structured response as returned by Llama 3.2 Vision."""
+        raw_output = """Content Type: mixed
+Language: Python
+Readability: clear
+Summary: The user is currently viewing a YouTube tutorial video on how to make a simple calculator in Python, with a code snippet visible in the foreground.
+Code Details: The code snippet appears to be a basic calculator program written in Python, using the print function to display the user's input and calculate the result.
+Visible Issues: None
+Uncertainties: None
+Spoken Response: "You are currently watching a YouTube tutorial video on how to make a simple calculator in Python. The code snippet onyour screen shows a basic calculator program that uses the print function to display the user's input and calculate the result."
+"""
+        analysis = _parse_vision_response(raw_output)
+        self.assertEqual(analysis.content_type, "mixed")
+        self.assertEqual(analysis.language, "Python")
+        self.assertEqual(analysis.readability, "clear")
+        self.assertIn("YouTube tutorial video", analysis.summary)
+        self.assertIn("basic calculator program", analysis.code_details)
+        self.assertEqual(analysis.visible_issues, "None")
+        self.assertEqual(analysis.uncertainties, "None")
+
+        # Verify spoken_response is strictly the conversational response
+        self.assertNotIn("Content Type", analysis.spoken_response)
+        self.assertNotIn("Summary:", analysis.spoken_response)
+        self.assertNotIn("Code Details:", analysis.spoken_response)
+        self.assertNotIn("Visible Issues:", analysis.spoken_response)
+        self.assertNotIn("Uncertainties:", analysis.spoken_response)
+        self.assertTrue(analysis.spoken_response.startswith("You are currently watching"))
+
+        # Verify token concatenation fix: onyour -> on your
+        self.assertIn("on your screen", analysis.spoken_response)
+        self.assertNotIn("onyour", analysis.spoken_response)
+
+    def test_parse_markdown_bold_key_value(self):
+        """Test parsing key-value pairs formatted with markdown bold asterisks."""
+        raw_output = """**Content Type:** video_tutorial
+**Language:** Python
+**Summary:** Tutorial on building calculator functions.
+**Spoken Response:** "You are watching a Python tutorial onyour computer."
+"""
+        analysis = _parse_vision_response(raw_output)
+        self.assertEqual(analysis.content_type, "video_tutorial")
+        self.assertEqual(analysis.language, "Python")
+        self.assertIn("on your computer", analysis.spoken_response)
+        self.assertNotIn("onyour", analysis.spoken_response)
+        self.assertNotIn("**", analysis.spoken_response)
+
+    def test_parse_markdown_header_key_value(self):
+        """Test parsing key-value sections formatted with markdown headers."""
+        raw_output = """### Summary
+The user has a terminal window open showing test failures.
+
+### Spoken Response
+Your terminal shows three pytest tests failed in the continuous assistant module.
+"""
+        analysis = _parse_vision_response(raw_output)
+        self.assertIn("terminal window open", analysis.summary)
+        self.assertEqual(
+            analysis.spoken_response,
+            "Your terminal shows three pytest tests failed in the continuous assistant module.",
+        )
+
+    def test_parse_key_value_fallback_to_summary(self):
+        """Test that if spoken_response field is missing, summary is used as spoken response."""
+        raw_output = """Content Type: code
+Language: Python
+Summary: A binary search implementation with low and high pointers.
+"""
+        analysis = _parse_vision_response(raw_output)
+        self.assertEqual(analysis.content_type, "code")
+        self.assertEqual(analysis.language, "Python")
+        self.assertEqual(
+            analysis.spoken_response,
+            "A binary search implementation with low and high pointers.",
+        )
+
+    def test_clean_tts_text_token_fusions(self):
+        """Test cleaning of fused preposition and determiner tokens."""
+        raw = "The script onyour computer is running inthis terminal withyour environment ofthese files."
+        cleaned = _clean_tts_text(raw)
+        self.assertEqual(
+            cleaned,
+            "The script on your computer is running in this terminal with your environment of these files.",
+        )
+
+    def test_clean_tts_text_deduplicate_sentences(self):
+        """Test removal of consecutive duplicate sentences."""
+        raw = "You are watching a Python tutorial. You are watching a Python tutorial."
+        cleaned = _clean_tts_text(raw)
+        self.assertEqual(cleaned, "You are watching a Python tutorial.")
+
     def test_parse_fallback_unstructured_text(self):
         raw = "This is a C++ video tutorial showing how to use std::vector with push_back."
         analysis = _parse_vision_response(raw)
