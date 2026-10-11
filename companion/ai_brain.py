@@ -534,7 +534,21 @@ def extract_json_intent(raw_text: str, user_command: str) -> dict | None:
         return {"action": "weather", "query": city.title() if city else None}
 
     # Rule VISION-SCREEN: Visual Screen Intelligence & Code Understanding
-    if re.search(r"\b(?:what(?:\s*is|'s)\s+(?:on|visible\s+on)\s+(?:my\s+|the\s+)?screen|look\s+at\s+my\s+screen|inspect\s+(?:my\s+)?screen|examine\s+(?:my\s+)?screen|read\s+(?:my\s+|what's\s+on\s+my\s+)?screen|what\s+do\s+you\s+see(?:\s+on\s+my\s+screen)?|what\s+(?:am\s+i|are\s+we)\s+looking\s+at)\b", cleaned_speech):
+    if re.search(
+        r"\b(?:"
+        r"what(?:\s*is|'s)\s+(?:on|visible\s+on)\s+(?:my\s+|the\s+)?(?:screen|display|monitor|computer)"
+        r"|look\s+at\s+(?:my\s+|the\s+)?screen(?:\s+and\s+explain\s+it)?"
+        r"|inspect\s+(?:my\s+)?screen"
+        r"|examine\s+(?:my\s+)?screen"
+        r"|read\s+(?:my\s+|what's\s+on\s+my\s+)?screen"
+        r"|what\s+do\s+you\s+see(?:\s+on\s+my\s+screen)?"
+        r"|what\s+(?:am\s+i|are\s+we)\s+looking\s+at(?:\s+on\s+(?:my\s+|the\s+)?screen)?"
+        r"|explain\s+what\s+(?:i'm|i\s+am|we're|we\s+are)\s+looking\s+at(?:\s+on\s+(?:my\s+|the\s+)?screen)?"
+        r"|describe\s+what(?:'s|\s+is)\s+displayed(?:\s+on\s+(?:my\s+)?(?:computer|screen|monitor))?"
+        r"|describe\s+(?:my\s+|the\s+)?(?:screen|display|computer)"
+        r")\b",
+        cleaned_speech,
+    ):
         return {"action": "screen_analysis", "query": orig_speech}
 
     if re.search(r"\b(?:explain\s+(?:this\s+|the\s+)?code(?:\s+on\s+(?:my\s+)?screen)?|what\s+(?:does\s+this\s+code\s+do|is\s+this\s+code\s+doing)|what\s+code\s+is\s+this|what\s+is\s+this\s+code)\b", cleaned_speech):

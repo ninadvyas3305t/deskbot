@@ -118,6 +118,7 @@ class ScreenEdgeOverlay(QWidget):
         self._phase: float = 0.0
         self._breath_phase: float = 0.0
         self._temporarily_suppressed: bool = False
+        self._native_flags_applied: bool = False
 
         # Fit to primary display and monitor display changes
         self._fit_to_screen()
@@ -162,6 +163,16 @@ class ScreenEdgeOverlay(QWidget):
 
     def _apply_native_window_flags(self) -> None:
         """Apply OS-level non-activating, click-through window properties where supported."""
+        if getattr(self, "_native_flags_applied", False):
+            return
+
+        # Ensure execution is strictly on the Qt main GUI thread before touching native window server
+        app = QGuiApplication.instance()
+        if app and hasattr(app, "thread"):
+            from PySide6.QtCore import QThread
+            if QThread.currentThread() != app.thread():
+                return
+
         if sys.platform == "darwin":
             try:
                 import objc
@@ -173,6 +184,8 @@ class ScreenEdgeOverlay(QWidget):
                     NSWindowCollectionBehaviorIgnoresCycle,
                 )
                 wid = int(self.winId())
+                if wid <= 0:
+                    return
                 nsview = objc.objc_object(c_void_p=wid)
                 nswin = nsview.window() if nsview else None
                 if nswin:
@@ -191,6 +204,7 @@ class ScreenEdgeOverlay(QWidget):
                         | NSWindowCollectionBehaviorIgnoresCycle
                     )
                     nswin.setCollectionBehavior_(behavior)
+                    self._native_flags_applied = True
             except Exception as err:
                 logger.debug("[EDGE_OVERLAY] Cocoa native window setup notice: %s", err)
 
@@ -198,6 +212,8 @@ class ScreenEdgeOverlay(QWidget):
             try:
                 import ctypes
                 hwnd = int(self.winId())
+                if hwnd <= 0:
+                    return
                 GWL_EXSTYLE = -20
                 WS_EX_TRANSPARENT = 0x00000020
                 WS_EX_LAYERED = 0x00080000
@@ -210,13 +226,15 @@ class ScreenEdgeOverlay(QWidget):
                     GWL_EXSTYLE,
                     style | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                 )
+                self._native_flags_applied = True
             except Exception:
                 pass
 
     def showEvent(self, event) -> None:
         """Re-apply native OS window attributes when window is shown."""
         super().showEvent(event)
-        self._apply_native_window_flags()
+        if not getattr(self, "_native_flags_applied", False):
+            self._apply_native_window_flags()
 
     # --- Configuration Setters & Getters ---
 
@@ -358,16 +376,31 @@ class ScreenEdgeOverlay(QWidget):
             if not self._timer.isActive():
                 self._timer.start(16)
 
+    def set_suppressed(self, suppressed: bool) -> None:
+        """Thread-safe toggle to suppress/unsuppress edge glow rendering without unmapping native window."""
+        self._temporarily_suppressed = bool(suppressed)
+
     def suppress_for_screenshot(self, duration_ms: int = 300) -> None:
-        """Temporarily hide the overlay so it does not contaminate screen inspection."""
+        """Temporarily suppress edge glow without unmapping or destroying native window."""
         self._temporarily_suppressed = True
-        self.hide()
-        QTimer.singleShot(duration_ms, self._restore_after_screenshot)
+        app = QGuiApplication.instance()
+        if app and hasattr(app, "thread"):
+            from PySide6.QtCore import QThread
+            if QThread.currentThread() == app.thread():
+                QTimer.singleShot(duration_ms, self._restore_after_screenshot)
+            else:
+                def _bg_restore():
+                    import time
+                    time.sleep(duration_ms / 1000.0)
+                    self._temporarily_suppressed = False
+                import threading
+                threading.Thread(target=_bg_restore, daemon=True).start()
+        else:
+            self._temporarily_suppressed = False
 
     def _restore_after_screenshot(self) -> None:
         self._temporarily_suppressed = False
         if self._enabled and self._target_opacity > 0.01:
-            self.show()
             if not self._timer.isActive():
                 self._timer.start(16)
 

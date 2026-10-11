@@ -111,6 +111,8 @@ def _capture_macos_in_process(bbox: Optional[Tuple[int, int, int, int]] = None) 
         cg.CGImageGetDataProvider.argtypes = [c_void_p]
         cg.CGDataProviderCopyData.restype = c_void_p
         cg.CGDataProviderCopyData.argtypes = [c_void_p]
+        cg.CGImageRelease.restype = None
+        cg.CGImageRelease.argtypes = [c_void_p]
 
         cf.CFDataGetBytePtr.restype = POINTER(c_uint8)
         cf.CFDataGetBytePtr.argtypes = [c_void_p]
@@ -137,7 +139,7 @@ def _capture_macos_in_process(bbox: Optional[Tuple[int, int, int, int]] = None) 
             w = cg.CGImageGetWidth(img_ref)
             h = cg.CGImageGetHeight(img_ref)
             bpr = cg.CGImageGetBytesPerRow(img_ref)
-            if w <= 0 or h <= 0:
+            if w <= 0 or h <= 0 or bpr <= 0:
                 return None
 
             prov = cg.CGImageGetDataProvider(img_ref)
@@ -151,13 +153,15 @@ def _capture_macos_in_process(bbox: Optional[Tuple[int, int, int, int]] = None) 
             try:
                 ptr = cf.CFDataGetBytePtr(data_ref)
                 length = cf.CFDataGetLength(data_ref)
+                if not ptr or length <= 0 or length < (bpr * h):
+                    return None
                 buf = ctypes.string_at(ptr, length)
                 # macOS CoreGraphics returns BGRA pixel buffer
                 return Image.frombytes("RGBA", (w, h), buf, "raw", "BGRA", bpr, 1)
             finally:
                 cf.CFRelease(data_ref)
         finally:
-            cf.CFRelease(img_ref)
+            cg.CGImageRelease(img_ref)
 
     except Exception as err:
         logger.debug("In-process macOS screen capture error: %s", err)
@@ -166,38 +170,48 @@ def _capture_macos_in_process(bbox: Optional[Tuple[int, int, int, int]] = None) 
 
 def capture_raw_screen(bbox: Optional[Tuple[int, int, int, int]] = None) -> Optional[Image.Image]:
     """Capture raw, uncompressed full or region screenshot in memory across platforms."""
-    # Ensure ambient edge overlay is temporarily suppressed so it does not contaminate vision
+    overlay = None
     try:
-        from ui.edge_overlay import get_screen_overlay
+        try:
+            from ui.edge_overlay import get_screen_overlay
+        except ImportError:
+            from companion.ui.edge_overlay import get_screen_overlay
         overlay = get_screen_overlay()
-        if overlay and overlay.isVisible():
-            overlay.suppress_for_screenshot(duration_ms=300)
+        if overlay is not None:
+            overlay.set_suppressed(True)
             time.sleep(0.03)
     except Exception:
         pass
 
-    # 1. On macOS, prioritize direct in-process CoreGraphics capture
-    if sys.platform == "darwin":
-        img = _capture_macos_in_process(bbox=bbox)
-        if img is not None:
-            return img
+    try:
+        # 1. On macOS, prioritize direct in-process CoreGraphics capture
+        if sys.platform == "darwin":
+            img = _capture_macos_in_process(bbox=bbox)
+            if img is not None:
+                return img
 
-    # 2. Windows / Linux or fallback via Pillow ImageGrab
-    grab_module = ImageGrab
-    if grab_module is None:
-        try:
-            from PIL import ImageGrab as pil_grab
-            grab_module = pil_grab
-        except Exception:
-            pass
+        # 2. Windows / Linux or fallback via Pillow ImageGrab
+        grab_module = ImageGrab
+        if grab_module is None:
+            try:
+                from PIL import ImageGrab as pil_grab
+                grab_module = pil_grab
+            except Exception:
+                pass
 
-    if grab_module is not None:
-        try:
-            return grab_module.grab(bbox=bbox, all_screens=False)
-        except Exception as err:
-            logger.debug("Pillow ImageGrab failed: %s", err)
+        if grab_module is not None:
+            try:
+                return grab_module.grab(bbox=bbox, all_screens=False)
+            except Exception as err:
+                logger.debug("Pillow ImageGrab failed: %s", err)
 
-    return None
+        return None
+    finally:
+        if overlay is not None:
+            try:
+                overlay.set_suppressed(False)
+            except Exception:
+                pass
 
 
 def capture_screen(

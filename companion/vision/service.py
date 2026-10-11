@@ -135,8 +135,10 @@ def perform_screen_analysis(
         err_str = str(vision_err)
         if "NVIDIA_API_KEY" in err_str:
             spoken = "I couldn't analyze the screen because your NVIDIA API key is missing."
+        elif "connection" in err_str.lower() or "timeout" in err_str.lower() or "timed out" in err_str.lower():
+            spoken = "I was unable to connect to the vision AI service. Please check your internet connection."
         else:
-            spoken = f"I encountered an issue analyzing your screen: {err_str}"
+            spoken = "I encountered an issue analyzing your screen. Please try again."
         return ToolResult(
             success=False,
             message=f"Vision analysis error: {err_str}",

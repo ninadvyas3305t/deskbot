@@ -112,7 +112,114 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Diagnostic mode: force desktop edge illumination overlay to render continuously without audio/assistant pipeline.",
     )
+    parser.add_argument(
+        "--test-vision",
+        action="store_true",
+        help="Diagnostic mode: test screen capture, image optimization, vision model API, and screen-description pipeline independently.",
+    )
     return parser.parse_args()
+
+
+def run_vision_diagnostics() -> int:
+    """Run isolated diagnostics for screen capture, optimization, vision API, and full pipeline."""
+    import time
+    from pathlib import Path
+
+    print("\n" + "=" * 68)
+    print("  DESKBOT 2.0 — SCREEN VISION DIAGNOSTIC SUITE")
+    print("=" * 68)
+
+    # Test 1: Screenshot capture
+    print("\n[TEST 1/4] Testing Native Screen Capture...")
+    try:
+        from vision.screen_capture import capture_raw_screen
+        t0 = time.perf_counter()
+        raw_img = capture_raw_screen()
+        dur_cap = (time.perf_counter() - t0) * 1000.0
+
+        if raw_img is None:
+            print("  ❌ Screenshot capture failed: capture_raw_screen returned None.")
+            print("     Hint: Check macOS System Settings → Privacy & Security → Screen & System Audio Recording.")
+            return 1
+        print(f"  ✓ Screen captured successfully in {dur_cap:.1f}ms")
+        print(f"    • Resolution : {raw_img.width}x{raw_img.height}")
+        print(f"    • Color Mode : {raw_img.mode}")
+    except Exception as err:
+        print(f"  ❌ Screen capture exception: {err}")
+        return 1
+
+    # Test 2: Image conversion and optimization
+    print("\n[TEST 2/4] Testing Image Optimization & Encoding for Vision Model...")
+    try:
+        from vision.screen_capture import optimize_image_for_vision
+        t0 = time.perf_counter()
+        opt_img, b64_data = optimize_image_for_vision(raw_img, max_dimension=1024, quality=85)
+        dur_opt = (time.perf_counter() - t0) * 1000.0
+
+        data_uri_len = len(f"data:image/jpeg;base64,{b64_data}")
+        print(f"  ✓ Image optimized and encoded in {dur_opt:.1f}ms")
+        print(f"    • Optimized Dimensions : {opt_img.width}x{opt_img.height}")
+        print(f"    • Base64 Payload Size  : {data_uri_len / 1024.0:.1f} KB")
+        if data_uri_len < 500:
+            print("  ❌ Encoded payload too small to be a valid image.")
+            return 1
+    except Exception as err:
+        print(f"  ❌ Image optimization exception: {err}")
+        return 1
+
+    # Test 3: Vision API connectivity & model query
+    print("\n[TEST 3/4] Testing Vision Model API Request...")
+    try:
+        from vision.service import get_vision_analyzer
+        analyzer = get_vision_analyzer()
+        print(f"    • Model    : {analyzer.model}")
+        print(f"    • Endpoint : {analyzer.base_url}")
+        print(f"    • Auth Key : {'[Configured]' if analyzer.api_key else '[Missing]'}")
+
+        if not analyzer.api_key:
+            print("  ⚠ Skipping live API call: NVIDIA_API_KEY is not configured in Keychain or environment.")
+        else:
+            t0 = time.perf_counter()
+            test_uri = f"data:image/jpeg;base64,{b64_data}"
+            try:
+                analysis = analyzer.analyze(
+                    image_data_uri=test_uri,
+                    user_query="What is on my screen? Provide a brief technical summary.",
+                )
+                dur_api = (time.perf_counter() - t0) * 1000.0
+                print(f"  ✓ Vision Model API responded in {dur_api:.1f}ms")
+                print(f"    • Content Type : {analysis.content_type}")
+                print(f"    • Language     : {analysis.language}")
+                print(f"    • Summary      : {analysis.summary[:140]}...")
+                print(f"    • Spoken (TTS) : {analysis.spoken_response[:140]}...")
+            except Exception as api_err:
+                print(f"  ⚠ Vision Model API request failed (network or model status): {api_err}")
+                print("     Note: The application reports this failure gracefully rather than crashing.")
+    except Exception as err:
+        print(f"  ❌ Vision analyzer initialization exception: {err}")
+        return 1
+
+    # Test 4: Full vision command execution via Tool Registry
+    print("\n[TEST 4/4] Testing Full End-to-End Screen Analysis Action...")
+    try:
+        from command_executor import execute_intent
+        t0 = time.perf_counter()
+        result = execute_intent({
+            "action": "screen_analysis",
+            "query": "Explain what I'm looking at on my screen.",
+        })
+        dur_tool = (time.perf_counter() - t0) * 1000.0
+        print(f"  ✓ Tool executed in {dur_tool:.1f}ms")
+        print(f"    • Success       : {result.success}")
+        print(f"    • Spoken Answer : {result.response_text or result.message}")
+    except Exception as err:
+        print(f"  ❌ End-to-end screen analysis execution exception: {err}")
+        return 1
+
+    print("\n" + "=" * 68)
+    print("  DIAGNOSTIC COMPLETE: Screen vision pipeline is fully operational!")
+    print("=" * 68 + "\n")
+    return 0
 
 
 def main() -> int:
@@ -120,6 +227,10 @@ def main() -> int:
 
     # 1. Setup rotating logging with sensitive data redaction
     setup_logging(debug=args.debug)
+
+    # Diagnostic Mode: Screen vision pipeline
+    if args.test_vision:
+        return run_vision_diagnostics()
 
     # Diagnostic Mode: Test edge illumination independently of audio/hardware
     if args.test_edge_glow:

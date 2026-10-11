@@ -377,5 +377,59 @@ class TestConversationContextIntegration(unittest.TestCase):
         self.assertIn("asyncio", prompt_str)
 
 
+class TestScreenVisionCrashFix(unittest.TestCase):
+    """Regression tests verifying crash fix, thread-safe suppression, and user intent coverage."""
+
+    def test_target_screen_vision_phrases_match_fast_intent(self):
+        """Verify the user's specific crash phrases route directly to screen_analysis."""
+        from ai_brain import fast_intent_match
+
+        queries = [
+            "Explain what I'm looking at on my screen.",
+            "Explain what I'm looking at on my screen",
+            "What is on my screen?",
+            "What is on my screen",
+            "Describe what's displayed on my computer.",
+            "Describe what's displayed on my computer",
+            "Look at my screen and explain it.",
+            "Look at my screen and explain it",
+            "What am I looking at?",
+        ]
+        for q in queries:
+            intent = fast_intent_match(q)
+            self.assertIsNotNone(intent, f"Failed fast match for: {q}")
+            self.assertEqual(intent.get("action"), "screen_analysis", f"Wrong action for: {q}")
+
+    def test_screen_capture_suppression_thread_safety(self):
+        """Verify capture_raw_screen safely suppresses and restores overlay without thread crashes."""
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        from vision.screen_capture import capture_raw_screen
+        from ui.edge_overlay import ScreenEdgeOverlay
+        import threading
+
+        overlay = ScreenEdgeOverlay()
+        overlay.set_assistant_state("LISTENING")
+        self.assertFalse(overlay._temporarily_suppressed)
+
+        with patch("ui.edge_overlay.get_screen_overlay", return_value=overlay):
+            # Capture from background thread (mirrors DeskBotAssistantWorker)
+            thread_errors = []
+            def _worker():
+                try:
+                    img = capture_raw_screen()
+                    self.assertIsNotNone(img)
+                except Exception as e:
+                    thread_errors.append(e)
+
+            t = threading.Thread(target=_worker)
+            t.start()
+            t.join()
+
+            self.assertEqual(len(thread_errors), 0, f"Thread error during capture: {thread_errors}")
+            # Overlay must be safely restored
+            self.assertFalse(overlay._temporarily_suppressed)
+
+
 if __name__ == "__main__":
     unittest.main()
