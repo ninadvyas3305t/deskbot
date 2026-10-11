@@ -7,6 +7,7 @@ Click-through, non-focus-stealing, and completely transparent at screen center.
 
 from __future__ import annotations
 
+import logging
 import math
 import sys
 from typing import Optional, Tuple
@@ -22,6 +23,8 @@ from PySide6.QtGui import (
     QPen,
 )
 from PySide6.QtWidgets import QWidget
+
+logger = logging.getLogger(__name__)
 
 
 # Google's spectral color stops for luminous glass perimeter glow:
@@ -83,24 +86,27 @@ class ScreenEdgeOverlay(QWidget):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
 
-        # Essential transparent, floating, non-interactive window flags
+        # Essential transparent, floating, non-interactive window flags.
+        # NOTE: Do NOT use Qt.SubWindow or Qt.Tool as they suppress native NSWindow creation
+        # or cause the window to hide automatically when the application loses focus on macOS.
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
             | Qt.WindowTransparentForInput
-            | Qt.Tool
-            | Qt.SubWindow
+            | Qt.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_AlwaysStackOnTop, True)
         self.setFocusPolicy(Qt.NoFocus)
 
         # Configuration options (customizable in Settings)
         self._enabled: bool = True
-        self._glow_intensity: float = 0.70    # 0.20 to 1.00
-        self._border_depth: int = 24          # 12 to 48 px inward glow
+        self._glow_intensity: float = 0.85    # 0.20 to 1.00 (default 0.85 for clear visibility)
+        self._border_depth: int = 28          # 12 to 48 px inward glow (default 28px)
         self._speed_multiplier: float = 1.0   # 0.4 to 2.0x animation speed
+        self._test_mode: bool = False
 
         # Runtime animation state
         self._state: str = "IDLE"
@@ -129,6 +135,25 @@ class ScreenEdgeOverlay(QWidget):
         # Apply platform-level click-through safety
         self._apply_native_window_flags()
 
+        # Connect directly to UI bridge so state machine events are received
+        # regardless of whether the main application window is open or minimized
+        self._connect_ui_bridge()
+
+    def _connect_ui_bridge(self) -> None:
+        """Subscribe directly to backend assistant state transitions."""
+        try:
+            try:
+                from companion.ui.bridge import get_ui_bridge
+            except ImportError:
+                from ui.bridge import get_ui_bridge
+            bridge = get_ui_bridge()
+            if bridge:
+                bridge.overlay_state_synced.connect(self.set_assistant_state)
+                bridge.overlay_visibility_toggled.connect(self.set_enabled)
+                logger.debug("[EDGE_OVERLAY] Connected directly to UI Bridge.")
+        except Exception as bridge_err:
+            logger.debug("[EDGE_OVERLAY] UI Bridge auto-connection note: %s", bridge_err)
+
     def _fit_to_screen(self) -> None:
         """Position overlay across the active primary display screen."""
         screen = QGuiApplication.primaryScreen()
@@ -137,7 +162,39 @@ class ScreenEdgeOverlay(QWidget):
 
     def _apply_native_window_flags(self) -> None:
         """Apply OS-level non-activating, click-through window properties where supported."""
-        if sys.platform == "win32":
+        if sys.platform == "darwin":
+            try:
+                import objc
+                from AppKit import (
+                    NSColor,
+                    NSWindowCollectionBehaviorCanJoinAllSpaces,
+                    NSWindowCollectionBehaviorFullScreenAuxiliary,
+                    NSWindowCollectionBehaviorStationary,
+                    NSWindowCollectionBehaviorIgnoresCycle,
+                )
+                wid = int(self.winId())
+                nsview = objc.objc_object(c_void_p=wid)
+                nswin = nsview.window() if nsview else None
+                if nswin:
+                    nswin.setIgnoresMouseEvents_(True)
+                    # Level 25 is NSStatusWindowLevel: above standard application and floating windows
+                    nswin.setLevel_(25)
+                    nswin.setOpaque_(False)
+                    nswin.setBackgroundColor_(NSColor.clearColor())
+                    nswin.setHasShadow_(False)
+                    nswin.setHidesOnDeactivate_(False)
+                    behavior = (
+                        nswin.collectionBehavior()
+                        | NSWindowCollectionBehaviorCanJoinAllSpaces
+                        | NSWindowCollectionBehaviorFullScreenAuxiliary
+                        | NSWindowCollectionBehaviorStationary
+                        | NSWindowCollectionBehaviorIgnoresCycle
+                    )
+                    nswin.setCollectionBehavior_(behavior)
+            except Exception as err:
+                logger.debug("[EDGE_OVERLAY] Cocoa native window setup notice: %s", err)
+
+        elif sys.platform == "win32":
             try:
                 import ctypes
                 hwnd = int(self.winId())
@@ -155,6 +212,11 @@ class ScreenEdgeOverlay(QWidget):
                 )
             except Exception:
                 pass
+
+    def showEvent(self, event) -> None:
+        """Re-apply native OS window attributes when window is shown."""
+        super().showEvent(event)
+        self._apply_native_window_flags()
 
     # --- Configuration Setters & Getters ---
 
@@ -174,6 +236,36 @@ class ScreenEdgeOverlay(QWidget):
         else:
             if self._state not in ("IDLE", ""):
                 self.set_assistant_state(self._state)
+
+    def set_test_mode(self, enabled: bool = True) -> None:
+        """Diagnostic mode: force overlay to stay visible and continuously animate."""
+        self._test_mode = bool(enabled)
+        if self._test_mode:
+            self._enabled = True
+            self._state = "LISTENING"
+            self._target_opacity = 1.0
+            self._opacity = 1.0
+            self._speed_factor = 1.0
+            self._intensity_factor = 1.0
+            if self._glow_intensity < 0.85:
+                self._glow_intensity = 0.85
+            if self._border_depth < 28:
+                self._border_depth = 28
+            self._fit_to_screen()
+            self._start_animation()
+            self._apply_native_window_flags()
+            logger.info(
+                "[EDGE_OVERLAY] Test mode enabled: geometry=%s, depth=%dpx, intensity=%.2f",
+                self.geometry(),
+                self._border_depth,
+                self._glow_intensity,
+            )
+        else:
+            self.set_assistant_state("IDLE")
+
+    @property
+    def is_test_mode(self) -> bool:
+        return self._test_mode
 
     @property
     def glow_intensity(self) -> float:
@@ -208,8 +300,8 @@ class ScreenEdgeOverlay(QWidget):
         if not config_mgr:
             return
         self.set_enabled(bool(config_mgr.get("screen_overlay_enabled", True)))
-        self.set_glow_intensity(float(config_mgr.get("overlay_glow_intensity", 0.70)))
-        self.set_edge_thickness(int(config_mgr.get("overlay_edge_thickness", 24)))
+        self.set_glow_intensity(float(config_mgr.get("overlay_glow_intensity", 0.85)))
+        self.set_edge_thickness(int(config_mgr.get("overlay_edge_thickness", 28)))
         self.set_animation_speed(float(config_mgr.get("overlay_animation_speed", 1.0)))
 
     # --- Assistant State Synchronization ---
@@ -281,8 +373,12 @@ class ScreenEdgeOverlay(QWidget):
 
     def _on_tick(self) -> None:
         """Advance animation phase and interpolate opacity smoothly."""
-        # Smooth exponential interpolation towards target opacity
-        self._opacity += (self._target_opacity - self._opacity) * 0.12
+        if self._test_mode:
+            self._opacity = 1.0
+            self._target_opacity = 1.0
+        else:
+            # Smooth exponential interpolation towards target opacity
+            self._opacity += (self._target_opacity - self._opacity) * 0.12
 
         # Advance color phase and gentle breathing phase
         delta = 0.0035 * self._speed_multiplier * self._speed_factor
@@ -290,7 +386,7 @@ class ScreenEdgeOverlay(QWidget):
         self._breath_phase = (self._breath_phase + 0.04 * self._speed_multiplier) % (2.0 * math.pi)
 
         # If fully faded out and target is 0, hide window and suspend timer to save GPU
-        if self._opacity < 0.01 and self._target_opacity <= 0.01:
+        if not self._test_mode and self._opacity < 0.01 and self._target_opacity <= 0.01:
             self._opacity = 0.0
             if self.isVisible():
                 self.hide()
@@ -318,8 +414,8 @@ class ScreenEdgeOverlay(QWidget):
         breath = 0.90 + 0.10 * math.sin(self._breath_phase)
         effective_alpha = self._opacity * self._glow_intensity * self._intensity_factor * breath
 
-        base_alpha = int(170 * effective_alpha)
-        edge_alpha = int(230 * effective_alpha)
+        base_alpha = int(220 * effective_alpha)
+        edge_alpha = int(255 * effective_alpha)
         if base_alpha <= 0 and edge_alpha <= 0:
             return
 
@@ -328,10 +424,12 @@ class ScreenEdgeOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
+        dpr = self.devicePixelRatio()
         num_stops = 12
 
         # 1. Top Edge Strip
-        top_strip = QImage(w, depth, QImage.Format_ARGB32_Premultiplied)
+        top_strip = QImage(int(w * dpr), int(depth * dpr), QImage.Format_ARGB32_Premultiplied)
+        top_strip.setDevicePixelRatio(dpr)
         top_strip.fill(Qt.transparent)
         tsp = QPainter(top_strip)
         tgrad = QLinearGradient(0, 0, w, 0)
@@ -344,7 +442,9 @@ class ScreenEdgeOverlay(QWidget):
 
         tfade = QLinearGradient(0, 0, 0, depth)
         tfade.setColorAt(0.0, QColor(0, 0, 0, 255))
-        tfade.setColorAt(0.35, QColor(0, 0, 0, 130))
+        tfade.setColorAt(0.18, QColor(0, 0, 0, 220))
+        tfade.setColorAt(0.45, QColor(0, 0, 0, 130))
+        tfade.setColorAt(0.75, QColor(0, 0, 0, 40))
         tfade.setColorAt(1.0, QColor(0, 0, 0, 0))
         tsp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
         tsp.fillRect(0, 0, w, depth, tfade)
@@ -352,7 +452,8 @@ class ScreenEdgeOverlay(QWidget):
         painter.drawImage(0, 0, top_strip)
 
         # 2. Bottom Edge Strip
-        bot_strip = QImage(w, depth, QImage.Format_ARGB32_Premultiplied)
+        bot_strip = QImage(int(w * dpr), int(depth * dpr), QImage.Format_ARGB32_Premultiplied)
+        bot_strip.setDevicePixelRatio(dpr)
         bot_strip.fill(Qt.transparent)
         bsp = QPainter(bot_strip)
         bgrad = QLinearGradient(0, 0, w, 0)
@@ -366,7 +467,9 @@ class ScreenEdgeOverlay(QWidget):
 
         bfade = QLinearGradient(0, depth, 0, 0)
         bfade.setColorAt(0.0, QColor(0, 0, 0, 255))
-        bfade.setColorAt(0.35, QColor(0, 0, 0, 130))
+        bfade.setColorAt(0.18, QColor(0, 0, 0, 220))
+        bfade.setColorAt(0.45, QColor(0, 0, 0, 130))
+        bfade.setColorAt(0.75, QColor(0, 0, 0, 40))
         bfade.setColorAt(1.0, QColor(0, 0, 0, 0))
         bsp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
         bsp.fillRect(0, 0, w, depth, bfade)
@@ -374,7 +477,8 @@ class ScreenEdgeOverlay(QWidget):
         painter.drawImage(0, h - depth, bot_strip)
 
         # 3. Left Edge Strip
-        left_strip = QImage(depth, h, QImage.Format_ARGB32_Premultiplied)
+        left_strip = QImage(int(depth * dpr), int(h * dpr), QImage.Format_ARGB32_Premultiplied)
+        left_strip.setDevicePixelRatio(dpr)
         left_strip.fill(Qt.transparent)
         lsp = QPainter(left_strip)
         lgrad = QLinearGradient(0, 0, 0, h)
@@ -388,7 +492,9 @@ class ScreenEdgeOverlay(QWidget):
 
         lfade = QLinearGradient(0, 0, depth, 0)
         lfade.setColorAt(0.0, QColor(0, 0, 0, 255))
-        lfade.setColorAt(0.35, QColor(0, 0, 0, 130))
+        lfade.setColorAt(0.18, QColor(0, 0, 0, 220))
+        lfade.setColorAt(0.45, QColor(0, 0, 0, 130))
+        lfade.setColorAt(0.75, QColor(0, 0, 0, 40))
         lfade.setColorAt(1.0, QColor(0, 0, 0, 0))
         lsp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
         lsp.fillRect(0, 0, depth, h, lfade)
@@ -396,7 +502,8 @@ class ScreenEdgeOverlay(QWidget):
         painter.drawImage(0, 0, left_strip)
 
         # 4. Right Edge Strip
-        right_strip = QImage(depth, h, QImage.Format_ARGB32_Premultiplied)
+        right_strip = QImage(int(depth * dpr), int(h * dpr), QImage.Format_ARGB32_Premultiplied)
+        right_strip.setDevicePixelRatio(dpr)
         right_strip.fill(Qt.transparent)
         rsp = QPainter(right_strip)
         rgrad = QLinearGradient(0, 0, 0, h)
@@ -410,14 +517,16 @@ class ScreenEdgeOverlay(QWidget):
 
         rfade = QLinearGradient(depth, 0, 0, 0)
         rfade.setColorAt(0.0, QColor(0, 0, 0, 255))
-        rfade.setColorAt(0.35, QColor(0, 0, 0, 130))
+        rfade.setColorAt(0.18, QColor(0, 0, 0, 220))
+        rfade.setColorAt(0.45, QColor(0, 0, 0, 130))
+        rfade.setColorAt(0.75, QColor(0, 0, 0, 40))
         rfade.setColorAt(1.0, QColor(0, 0, 0, 0))
         rsp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
         rsp.fillRect(0, 0, depth, h, rfade)
         rsp.end()
         painter.drawImage(w - depth, 0, right_strip)
 
-        # 5. Crisp, delicate 1.5px perimeter contour
+        # 5. Crisp, delicate perimeter contour
         pen_grad = QLinearGradient(0, 0, w, 0)
         for k in range(num_stops + 1):
             pos = k / float(num_stops)

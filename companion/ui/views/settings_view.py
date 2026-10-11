@@ -175,7 +175,7 @@ class SettingsView(QWidget):
         lbl_glow.setStyleSheet(f"font-size: 13px; color: {COLOR_TEXT_SECONDARY}; min-width: 140px;")
         self.slider_glow = QSlider(Qt.Horizontal)
         self.slider_glow.setRange(20, 100)
-        self.lbl_glow_val = QLabel("70%")
+        self.lbl_glow_val = QLabel("85%")
         self.lbl_glow_val.setStyleSheet(f"font-size: 12px; color: {COLOR_ACCENT_CYAN}; min-width: 40px;")
         self.slider_glow.valueChanged.connect(self._on_glow_changed)
         row_glow.addWidget(lbl_glow)
@@ -189,7 +189,7 @@ class SettingsView(QWidget):
         lbl_thick.setStyleSheet(f"font-size: 13px; color: {COLOR_TEXT_SECONDARY}; min-width: 140px;")
         self.slider_thickness = QSlider(Qt.Horizontal)
         self.slider_thickness.setRange(12, 48)
-        self.lbl_thickness_val = QLabel("24px")
+        self.lbl_thickness_val = QLabel("28px")
         self.lbl_thickness_val.setStyleSheet(f"font-size: 12px; color: {COLOR_ACCENT_CYAN}; min-width: 40px;")
         self.slider_thickness.valueChanged.connect(self._on_thickness_changed)
         row_thick.addWidget(lbl_thick)
@@ -334,11 +334,11 @@ class SettingsView(QWidget):
         self.entry_vision.setText(str(self.config_mgr.get("vision_model", "meta/llama-3.2-11b-vision-instruct")))
 
         self.chk_overlay.setChecked(bool(self.config_mgr.get("screen_overlay_enabled", True)))
-        glow = float(self.config_mgr.get("overlay_glow_intensity", 0.70))
+        glow = float(self.config_mgr.get("overlay_glow_intensity", 0.85))
         self.slider_glow.setValue(int(glow * 100))
         self.lbl_glow_val.setText(f"{int(glow * 100)}%")
 
-        thickness = int(self.config_mgr.get("overlay_edge_thickness", 24))
+        thickness = int(self.config_mgr.get("overlay_edge_thickness", 28))
         self.slider_thickness.setValue(thickness)
         self.lbl_thickness_val.setText(f"{thickness}px")
 

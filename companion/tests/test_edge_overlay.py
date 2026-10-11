@@ -29,8 +29,8 @@ def test_edge_overlay_initialization(qapp):
     assert bool(overlay.windowFlags() & Qt.FramelessWindowHint) is True
     assert bool(overlay.windowFlags() & Qt.WindowTransparentForInput) is True
     assert bool(overlay.windowFlags() & Qt.WindowStaysOnTopHint) is True
-    assert overlay.glow_intensity == pytest.approx(0.70)
-    assert overlay.edge_thickness == 24
+    assert overlay.glow_intensity == pytest.approx(0.85)
+    assert overlay.edge_thickness == 28
     assert overlay.animation_speed == pytest.approx(1.0)
 
 
@@ -183,3 +183,24 @@ def test_edge_overlay_paint_and_power_saving(qapp):
     assert overlay._opacity == 0.0
     assert overlay.isVisible() is False
     assert overlay._timer.isActive() is False, "Timer must stop in IDLE to save CPU/GPU power"
+
+
+def test_edge_overlay_diagnostic_test_mode(qapp):
+    overlay = ScreenEdgeOverlay()
+    overlay.set_test_mode(True)
+    assert overlay.is_test_mode is True
+    assert overlay.is_enabled is True
+    assert overlay._state == "LISTENING"
+    assert overlay._opacity == pytest.approx(1.0)
+    assert overlay._target_opacity == pytest.approx(1.0)
+    assert overlay._timer.isActive() is True
+
+    # Advance ticks: opacity remains locked at 1.0
+    for _ in range(20):
+        overlay._on_tick()
+    assert overlay._opacity == pytest.approx(1.0)
+
+    # Disable test mode
+    overlay.set_test_mode(False)
+    assert overlay.is_test_mode is False
+    assert overlay._target_opacity == 0.0

@@ -107,6 +107,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable verbose debug logging.",
     )
+    parser.add_argument(
+        "--test-edge-glow",
+        action="store_true",
+        help="Diagnostic mode: force desktop edge illumination overlay to render continuously without audio/assistant pipeline.",
+    )
     return parser.parse_args()
 
 
@@ -115,6 +120,53 @@ def main() -> int:
 
     # 1. Setup rotating logging with sensitive data redaction
     setup_logging(debug=args.debug)
+
+    # Diagnostic Mode: Test edge illumination independently of audio/hardware
+    if args.test_edge_glow:
+        logger.info("[DIAGNOSTIC] Initializing DeskBot Edge Illumination diagnostic mode...")
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication
+        from ui.edge_overlay import initialize_screen_overlay
+
+        q_app = QApplication.instance() or QApplication(sys.argv)
+        q_app.setApplicationName("DeskBot Edge Glow Diagnostic")
+        q_app.setApplicationDisplayName("DeskBot Edge Glow Diagnostic")
+
+        overlay = initialize_screen_overlay()
+        overlay.set_test_mode(True)
+
+        geom = overlay.geometry()
+        print("\n" + "=" * 65)
+        print("  DESKBOT DESKTOP EDGE ILLUMINATION — DIAGNOSTIC MODE ACTIVE")
+        print("=" * 65)
+        print(f"  • Screen Geometry  : {geom.width()}x{geom.height()} at ({geom.x()}, {geom.y()})")
+        print(f"  • Edge Thickness   : {overlay.edge_thickness}px inward luminous depth")
+        print(f"  • Glow Intensity   : {int(overlay.glow_intensity * 100)}%")
+        print(f"  • Window Native ID : {int(overlay.winId())}")
+        print("  • Center Screen    : 100% transparent & click-through")
+        print("  • OS Window Level  : Top-level overlay (Status/Floating)")
+        print("=" * 65)
+        print("  Press Ctrl+C in this terminal window to stop diagnostic mode.\n", flush=True)
+
+        # Periodic timer allows Python signal handler to respond immediately to SIGINT (Ctrl+C)
+        sig_timer = QTimer()
+        sig_timer.timeout.connect(lambda: None)
+        sig_timer.start(200)
+
+        def _sig_handler(sig, frame):
+            print("\n[DIAGNOSTIC] Stopping diagnostic mode...", flush=True)
+            overlay.set_test_mode(False)
+            overlay.hide()
+            q_app.quit()
+
+        try:
+            signal.signal(signal.SIGINT, _sig_handler)
+            signal.signal(signal.SIGTERM, _sig_handler)
+        except Exception:
+            pass
+
+        return q_app.exec()
+
     lifecycle_mgr = get_lifecycle_manager()
     lifecycle_mgr.transition_to(AppLifecycleState.STARTING, "DeskBot starting...")
 
